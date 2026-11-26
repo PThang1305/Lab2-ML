@@ -1,0 +1,3 @@
+weighting,scratch_feature,scratch_threshold,scratch_information_gain,sklearn_feature,sklearn_threshold,sklearn_information_gain,absolute_gain_difference
+unweighted,loan_percent_income,0.305,0.06291752155563538,loan_percent_income,0.3050000071525574,0.06291752155563538,0.0
+balanced,loan_percent_income,0.305,0.08378081132987006,loan_percent_income,0.3050000071525574,0.08378081132981824,5.181965967437918e-14

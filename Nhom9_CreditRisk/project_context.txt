@@ -1,0 +1,1696 @@
+﻿
+===== FILE: README.md =====
+
+# Nhom9_CreditRisk
+
+Phân tích và phân loại rủi ro vỡ nợ khoản vay bằng Decision Tree, Random Forest và Gradient Boosting. Mục tiêu là `loan_status` (1 = vỡ nợ).
+
+## Thời điểm dự đoán và rò rỉ
+
+Kịch bản **B / Pre-Decision** là kết quả chính, chỉ dùng 9 đặc trưng sẵn có khi nhận hồ sơ. Kịch bản **A / Full-Feature** thêm `loan_grade` và `loan_int_rate`, hai biến hình thành trong thẩm định/định giá, để đo lượng thông tin hậu quyết định lọt vào mô hình. Không dùng A làm mô hình triển khai trước quyết định.
+
+## Kết quả chạy trên CSV đi kèm
+
+- Sau làm sạch theo quy tắc miền: **32,409** dòng; train/test: **25,927/6,482**.
+- Mô hình chọn theo 5-fold CV Average Precision (AP): **GradientBoosting**.
+- AP test: **0.8355**; F1 tại ngưỡng OOF `t_opt=0.62`: **0.7253**.
+- Baseline accuracy lớp đa số: **78.13%** trên dữ liệu đã làm sạch (CSV gốc: 78.18%); accuracy không dùng để chọn mô hình.
+
+CSV archive thực tế có 887 giá trị thiếu `person_emp_length` sau lọc. Bản mô tả đầu vào ghi 889; số đo trên archive là 887, và mã kiểm tra/report dùng con số quan sát được.
+
+## Cấu trúc
+
+`src/` chứa pipeline, tiền xử lý, tuning, đánh giá, giải thích, trực quan hóa và CLI dự đoán. `notebooks/` có notebook báo cáo thực thi. `data/raw/` giữ dữ liệu nguồn. `outputs/`, `models/`, `docs/` lưu kết quả tái lập. Không tạo `data/processed/`.
+
+## Cài đặt và chạy
+
+```bash
+python -m pip install -r requirements.txt
+python -m src.pipeline
+pytest -v
+jupyter nbconvert --to notebook --execute --inplace notebooks/Nhom9_CreditRisk_Lab.ipynb
+```
+
+Chạy inference với CSV hồ sơ mới có đủ các cột Scenario B:
+
+```bash
+python -m src.predict --input path/to/new_applicants.csv --output path/to/predictions.csv
+```
+
+Mở `notebooks/Nhom9_CreditRisk_Lab.ipynb` trong Jupyter để xem EDA, phương pháp, kết quả và kiểm chứng from-scratch. Chi tiết phương pháp ở [docs/methodology.md](docs/methodology.md), số liệu đầy đủ ở [docs/results.md](docs/results.md).
+
+
+===== FILE: docs/methodology.md =====
+
+# Phương pháp
+
+## Mục tiêu và thời điểm dự đoán
+
+Đây là bài toán phân loại nhị phân dự đoán `loan_status` (1 = vỡ nợ). Kịch bản chính **B / Pre-Decision** chỉ dùng thông tin có sẵn khi nhận hồ sơ. Kịch bản đối chứng **A / Full-Feature** thêm `loan_grade` và `loan_int_rate`; đây là các biến được tạo trong quá trình thẩm định/định giá và có quan hệ rất mạnh với nhãn. Kịch bản A dùng để minh họa rò rỉ nghiệp vụ, không phải phương án triển khai trước quyết định.
+
+## Kiểm toán và làm sạch
+
+Nguồn có 32,581 dòng và 12 cột; có 165 dòng trùng hoàn toàn. Áp dụng đúng quy tắc miền: loại bản trùng, tuổi trên 100, và số năm làm việc trên 60; NaN trong `person_emp_length` được giữ bằng điều kiện rõ ràng. Kết quả là 32,409 dòng. Archive thực tế còn **887** giá trị thiếu `person_emp_length` sau lọc (tỷ lệ vỡ nợ 31.68%, so với 21.59% ở nhóm có dữ liệu). Con số 889 trong bản mô tả đi kèm không khớp với CSV được cung cấp; báo cáo này dùng số đo từ dữ liệu.
+
+## Chia dữ liệu và tiền xử lý
+
+Một lần chia train/test stratified 80/20, `random_state=42`, tạo 25,927 dòng train và 6,482 dòng test. Mọi bước học tham số—median/mode imputation, one-hot encoding, và mô hình—nằm trong `Pipeline`/`ColumnTransformer`, nên được fit riêng trong từng fold. Không lưu bảng đã impute trước CV. `person_emp_length` có cờ missing do `SimpleImputer(add_indicator=True)`.
+
+Không dùng StandardScaler/MinMaxScaler: cây quyết định phân vùng theo thứ tự và ngưỡng `x_j <= tau`; phép đổi tỷ lệ đơn điệu dương không đổi thứ tự quan sát, nên không thay đổi các phân vùng ứng viên của cây.
+
+## Đánh giá, chọn mô hình và ngưỡng
+
+Dùng `StratifiedKFold(5, shuffle=True, random_state=42)`. Metric chọn/tuning chính là **Average Precision (AP)**, tương ứng `sklearn.metrics.average_precision_score`; ROC-AUC, F1, precision, recall và accuracy được báo cáo bổ sung. Accuracy được đặt cạnh baseline lớp đa số (78.13% sau làm sạch; 78.18% trên CSV gốc), không dùng để chọn mô hình.
+
+So sánh mô hình thường và `class_weight='balanced'` cho Decision Tree/Random Forest. Với boosting cân bằng, `compute_sample_weight('balanced', y)` được tính ngay trong `fit` trên nhãn của fold hiện tại. Ngưỡng được chọn trên xác suất Out-of-Fold của train: `t_opt=0.62` tối đa F1; `t_recall70=0.56` là ngưỡng cao nhất giữ recall ít nhất 0.70. Test được dùng ở bước cuối để tính xác suất một lần, sau đó cùng xác suất được tổng hợp ở 0.50 và `t_opt`.
+
+## Giải thích và kiểm chứng toán học
+
+Độ quan trọng impurity tích hợp của mô hình cây được gom về cột nguồn sau one-hot; permutation importance trên AP được tính trên mẫu train giữ lại riêng cho giải thích. Các mức quan trọng là mô tả phụ thuộc dự đoán, không phải quan hệ nhân quả. Đa cộng tuyến/các biến tương quan có thể chia sẻ hoặc làm lệch tầm quan trọng.
+
+Gini và mức giảm impurity ở nút gốc được tính từ đầu bằng sắp xếp và tổng tích lũy, rồi đối chiếu với `DecisionTreeClassifier(max_depth=1)`. Cài đặt boosting nhị phân từ đầu dùng pseudo-residual `y-p` và cập nhật lá Newton `sum(y-p)/sum(p(1-p))`; kết quả được so sánh trực tiếp với 5-stage scikit-learn.
+
+## Tái lập
+
+```bash
+python -m pip install -r requirements.txt
+python -m src.pipeline
+pytest -v
+jupyter nbconvert --to notebook --execute --inplace notebooks/Nhom9_CreditRisk_Lab.ipynb
+```
+
+Dataset SHA-256: `ce3c6d2167717bf1627d1c0c81cbccd28323cd4aa7b96d542599366d5ff6aac8`. Mọi đường dẫn được suy ra từ vị trí repository; các phép biến đổi không tạo `data/processed/`.
+
+
+===== FILE: docs/results.md =====
+
+# Kết quả thực nghiệm
+
+## Dữ liệu và lớp đa số
+
+CSV gốc: 32,581 × 12; sau xử lý miền: 32,409. Tập train/test: 25,927/6,482. Tỷ lệ nhãn 1 sau làm sạch: 21.87%; baseline accuracy lớp đa số: **78.13%**. Chỉ số thiếu việc làm đo trên dữ liệu đã làm sạch: 887 (2.74%); tỷ lệ default nhóm thiếu là 31.68%, nhóm có giá trị 21.59%.
+
+## Baseline CV
+
+| model | weighting | AP_mean | AP_std | ROC_AUC_mean | F1_mean | Precision_mean | Recall_mean | Accuracy_mean |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GradientBoosting | Unweighted | 0.7873 | 0.0059 | 0.8790 | 0.6515 | 0.9535 | 0.4951 | 0.8842 |
+| GradientBoosting | Balanced | 0.7844 | 0.0063 | 0.8783 | 0.6547 | 0.6080 | 0.7093 | 0.8363 |
+| RandomForest | Unweighted | 0.7701 | 0.0038 | 0.8649 | 0.6629 | 0.8862 | 0.5296 | 0.8822 |
+| RandomForest | Balanced | 0.7684 | 0.0035 | 0.8651 | 0.6698 | 0.7414 | 0.6109 | 0.8682 |
+| DecisionTree | Balanced | 0.4734 | 0.0110 | 0.7596 | 0.6250 | 0.6273 | 0.6229 | 0.8365 |
+| DecisionTree | Unweighted | 0.4687 | 0.0123 | 0.7616 | 0.6236 | 0.6113 | 0.6367 | 0.8319 |
+
+## Mô hình tuned, 5-fold CV trên train
+
+Mô hình được chọn theo AP: **GradientBoosting**.
+
+| Model | AP mean | AP SD | ROC-AUC mean | ROC-AUC SD | F1 mean | F1 SD | Precision | Recall |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| GradientBoosting | 0.8228 | 0.0085 | 0.9069 | 0.0069 | 0.7032 | 0.0046 | 0.6637 | 0.7478 |
+| RandomForest | 0.7889 | 0.0057 | 0.8805 | 0.0033 | 0.6782 | 0.0076 | 0.6673 | 0.6896 |
+| DecisionTree | 0.7611 | 0.0075 | 0.8561 | 0.0049 | 0.6293 | 0.0197 | 0.5583 | 0.7226 |
+
+## Ngưỡng OOF và đánh giá test cuối cùng
+
+`t_opt=0.62`; `t_recall70=0.56`. AP/ROC-AUC không phụ thuộc ngưỡng; các metric phân loại thay đổi theo ngưỡng. Accuracy được đọc cùng baseline 78.13%, không dùng làm tiêu chí chọn.
+
+| evaluation | ap | roc_auc | f1 | precision | recall | accuracy | tn | fp | fn | tp |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| default_0.50 | 0.8355 | 0.9167 | 0.7136 | 0.6581 | 0.7793 | 0.8632 | 4490 | 574 | 313 | 1105 |
+| oof_t_opt | 0.8355 | 0.9167 | 0.7253 | 0.7727 | 0.6834 | 0.8868 | 4779 | 285 | 449 | 969 |
+
+## So sánh thời điểm đặc trưng
+
+| scenario_name | evaluation | ap | roc_auc | f1 | precision | recall | accuracy | tn | fp | fn | tp |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Pre-Decision | default_0.50 | 0.8355 | 0.9167 | 0.7136 | 0.6581 | 0.7793 | 0.8632 | 4490 | 574 | 313 | 1105 |
+| Pre-Decision | oof_t_opt | 0.8355 | 0.9167 | 0.7253 | 0.7727 | 0.6834 | 0.8868 | 4779 | 285 | 449 | 969 |
+| Full-Feature (leakage comparison) | default_0.50 | 0.9152 | 0.9549 | 0.8254 | 0.8292 | 0.8216 | 0.9239 | 4824 | 240 | 253 | 1165 |
+| Full-Feature (leakage comparison) | oof_t_opt | 0.9152 | 0.9549 | 0.8443 | 0.9281 | 0.7743 | 0.9375 | 4979 | 85 | 320 | 1098 |
+
+Scenario A có các tín hiệu hậu thẩm định; chênh lệch của nó với B đo mức phụ thuộc mô hình vào các biến này, không phải ước lượng hiệu quả triển khai trước quyết định.
+
+## Tầm quan trọng biến và kiểm chứng từ đầu
+
+| feature | built_in_impurity_importance | permutation_ap_mean | permutation_ap_std |
+| --- | --- | --- | --- |
+| person_income | 0.3269 | 0.3317 | 0.0062 |
+| loan_percent_income | 0.2919 | 0.3200 | 0.0115 |
+| person_home_ownership | 0.1065 | 0.2263 | 0.0087 |
+| loan_amnt | 0.0483 | 0.1781 | 0.0089 |
+| loan_intent | 0.0812 | 0.0975 | 0.0043 |
+| cb_person_default_on_file | 0.0718 | 0.0451 | 0.0027 |
+| person_age | 0.0287 | 0.0319 | 0.0022 |
+| person_emp_length | 0.0290 | 0.0296 | 0.0012 |
+| cb_person_cred_hist_length | 0.0148 | 0.0126 | 0.0009 |
+
+| weighting | scratch_feature | scratch_threshold | scratch_information_gain | sklearn_feature | sklearn_threshold | sklearn_information_gain | absolute_gain_difference |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| unweighted | loan_percent_income | 0.3050 | 0.0629 | loan_percent_income | 0.3050 | 0.0629 | 0.0000 |
+| balanced | loan_percent_income | 0.3050 | 0.0838 | loan_percent_income | 0.3050 | 0.0838 | 0.0000 |
+
+Sai số tuyệt đối tối đa của boosting từ đầu so với `GradientBoostingClassifier`: **1.110e-16**.
+
+Các bảng đầy đủ, bao gồm tuning candidates và threshold sweep, nằm trong `outputs/`; 14 hình nằm trong `docs/images/`.
+
+
+===== FILE: models/model_metadata.json =====
+
+{
+  "scenario": "B",
+  "scenario_name": "pre_decision",
+  "model_name": "GradientBoosting",
+  "input_columns": [
+    "person_age",
+    "person_income",
+    "person_emp_length",
+    "loan_amnt",
+    "loan_percent_income",
+    "cb_person_cred_hist_length",
+    "person_home_ownership",
+    "loan_intent",
+    "cb_person_default_on_file"
+  ],
+  "target_column": "loan_status",
+  "positive_class": 1,
+  "optimal_threshold": 0.62,
+  "recall_70_threshold": 0.56,
+  "risk_bands": {
+    "low_max": 0.1,
+    "medium_max": 0.3
+  },
+  "random_state": 42,
+  "dataset_sha256": "ce3c6d2167717bf1627d1c0c81cbccd28323cd4aa7b96d542599366d5ff6aac8",
+  "test_ap": 0.8355169211478609
+}
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\config.py =====
+
+"""Shared project paths and feature definitions."""
+
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RAW_DATA_PATH = PROJECT_ROOT / "data" / "raw" / "credit_risk_dataset.csv"
+MODELS_DIR = PROJECT_ROOT / "models"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+DOCS_DIR = PROJECT_ROOT / "docs"
+IMAGES_DIR = DOCS_DIR / "images"
+
+RANDOM_STATE = 42
+TEST_SIZE = 0.2
+CV_FOLDS = 5
+TARGET_COL = "loan_status"
+MAJORITY_CLASS_BASELINE = 0.7818  # Raw-source prevalence; recomputed on cleaned data in reports.
+
+SCENARIO_B_NUMERIC = [
+    "person_age", "person_income", "person_emp_length", "loan_amnt",
+    "loan_percent_income", "cb_person_cred_hist_length",
+]
+SCENARIO_B_NOMINAL = ["person_home_ownership", "loan_intent"]
+SCENARIO_B_BINARY = ["cb_person_default_on_file"]
+
+SCENARIO_A_NUMERIC = SCENARIO_B_NUMERIC + ["loan_int_rate"]
+SCENARIO_A_NOMINAL = SCENARIO_B_NOMINAL.copy()
+SCENARIO_A_BINARY = SCENARIO_B_BINARY.copy()
+SCENARIO_A_ORDINAL = ["loan_grade"]
+
+SCENARIO_FEATURES = {
+    "B": SCENARIO_B_NUMERIC + SCENARIO_B_NOMINAL + SCENARIO_B_BINARY,
+    "A": SCENARIO_A_NUMERIC + SCENARIO_A_NOMINAL + SCENARIO_A_BINARY + SCENARIO_A_ORDINAL,
+}
+
+
+def ensure_directories() -> None:
+    """Create only the directories used by the project outputs."""
+    for path in (MODELS_DIR, OUTPUTS_DIR, IMAGES_DIR):
+        path.mkdir(parents=True, exist_ok=True)
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\evaluate.py =====
+
+"""Probability metrics, OOF threshold selection, and one-pass holdout scoring."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from sklearn.base import clone
+from sklearn.metrics import (
+    accuracy_score,
+    average_precision_score,
+    confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
+    roc_auc_score,
+)
+from sklearn.model_selection import StratifiedKFold, cross_val_predict
+
+from .config import CV_FOLDS, OUTPUTS_DIR, RANDOM_STATE
+
+
+def compute_classification_metrics(y_true, y_prob, threshold: float = 0.5) -> dict:
+    y_true = np.asarray(y_true)
+    y_prob = np.asarray(y_prob)
+    y_pred = (y_prob >= threshold).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    return {
+        "threshold": float(threshold),
+        "ap": float(average_precision_score(y_true, y_prob)),
+        "roc_auc": float(roc_auc_score(y_true, y_prob)),
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "precision": float(precision_score(y_true, y_pred, zero_division=0)),
+        "recall": float(recall_score(y_true, y_pred, zero_division=0)),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "tn": int(tn), "fp": int(fp), "fn": int(fn), "tp": int(tp),
+    }
+
+
+def optimize_oof_threshold(pipeline, X_train, y_train):
+    """Choose thresholds using only stratified out-of-fold training probabilities."""
+    splitter = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+    oof_probs = cross_val_predict(
+        clone(pipeline), X_train, y_train,
+        cv=splitter, method="predict_proba", n_jobs=-1,
+    )[:, 1]
+    thresholds = np.round(np.arange(0.05, 0.951, 0.01), 2)
+    rows = []
+    for threshold in thresholds:
+        metrics = compute_classification_metrics(y_train, oof_probs, float(threshold))
+        rows.append(metrics)
+    table = pd.DataFrame(rows)
+    max_f1 = table["f1"].max()
+    # If several thresholds tie, select the largest threshold for fewer alerts.
+    t_opt = float(table.loc[table["f1"] == max_f1, "threshold"].max())
+    eligible = table.loc[table["recall"] >= 0.70, "threshold"]
+    t_recall70 = float(eligible.max()) if not eligible.empty else float("nan")
+    table["selected_for_f1"] = table["threshold"].eq(t_opt)
+    table["selected_for_recall70"] = table["threshold"].eq(t_recall70)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    table.to_csv(OUTPUTS_DIR / "threshold_analysis.csv", index=False)
+    return table, t_opt, t_recall70, oof_probs
+
+
+def evaluate_final_test(
+    fitted_pipeline, X_test, y_test, t_opt: float,
+    model_name: str, scenario: str,
+) -> pd.DataFrame:
+    """Predict the holdout once, then summarize at the default and locked threshold."""
+    probabilities = fitted_pipeline.predict_proba(X_test)[:, 1]
+    rows = []
+    for label, threshold in (("default_0.50", 0.50), ("oof_t_opt", t_opt)):
+        metrics = compute_classification_metrics(y_test, probabilities, threshold)
+        rows.append({
+            "model": model_name, "scenario": scenario.upper(),
+            "evaluation": label, **metrics,
+        })
+    result = pd.DataFrame(rows)
+    result.to_csv(OUTPUTS_DIR / "test_results.csv", index=False)
+    return result
+
+
+def run_scenario_comparison(
+    X_train_b, y_train_b, X_test_b, y_test_b,
+    X_train_a, y_train_a, X_test_a, y_test_a,
+    best_estimator_template,
+    precomputed_b=None,
+) -> pd.DataFrame:
+    """Compare full-feature and pre-decision scenarios using training-only OOF cutoffs."""
+    rows = []
+    from .preprocessing import build_model_pipeline
+
+    classifier_template = best_estimator_template.named_steps["classifier"]
+    for scenario, X_train, y_train, X_test, y_test in (
+        ("B", X_train_b, y_train_b, X_test_b, y_test_b),
+        ("A", X_train_a, y_train_a, X_test_a, y_test_a),
+    ):
+        if scenario == "B" and precomputed_b is not None:
+            test_prob, t_opt = precomputed_b
+        else:
+            pipeline = build_model_pipeline(clone(classifier_template), scenario)
+            oof = cross_val_predict(
+                pipeline, X_train, y_train,
+                cv=StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE),
+                method="predict_proba", n_jobs=-1,
+            )[:, 1]
+            thresholds = np.round(np.arange(0.05, 0.951, 0.01), 2)
+            f1s = [f1_score(y_train, oof >= t, zero_division=0) for t in thresholds]
+            t_opt = float(thresholds[np.flatnonzero(np.asarray(f1s) == np.max(f1s))[-1]])
+            pipeline.fit(X_train, y_train)
+            test_prob = pipeline.predict_proba(X_test)[:, 1]
+        for label, threshold in (("default_0.50", 0.5), ("oof_t_opt", t_opt)):
+            rows.append({
+                "scenario": scenario,
+                "scenario_name": "Pre-Decision" if scenario == "B" else "Full-Feature (leakage comparison)",
+                "oof_t_opt": t_opt,
+                "evaluation": label,
+                **compute_classification_metrics(y_test, test_prob, threshold),
+            })
+    result = pd.DataFrame(rows)
+    result.to_csv(OUTPUTS_DIR / "scenario_comparison.csv", index=False)
+    return result
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\explainability.py =====
+
+"""Tree importance summaries and from-scratch mathematical checks."""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+from scipy.special import expit
+from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.inspection import permutation_importance
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+
+from .config import OUTPUTS_DIR, RANDOM_STATE
+
+
+def extract_feature_importances(fitted_pipeline, X_eval, y_eval):
+    """Join built-in transformed-feature importance to raw-column permutation importance."""
+    classifier = fitted_pipeline.named_steps["classifier"]
+    preprocessor = fitted_pipeline.named_steps["preprocessor"]
+    names = np.asarray(preprocessor.get_feature_names_out(), dtype=str)
+    built_in = np.asarray(classifier.feature_importances_, dtype=float)
+    perm = permutation_importance(
+        fitted_pipeline, X_eval, y_eval, scoring="average_precision",
+        n_repeats=10, random_state=RANDOM_STATE, n_jobs=-1,
+    )
+    raw_columns = list(X_eval.columns)
+    grouped_builtin = {col: 0.0 for col in raw_columns}
+    rows_encoded = []
+    for name, value in zip(names, built_in, strict=True):
+        source = next((col for col in raw_columns if name == col or name.startswith(f"{col}_")), name)
+        if source in grouped_builtin:
+            grouped_builtin[source] += float(value)
+        rows_encoded.append({"encoded_feature": name, "source_feature": source, "built_in_importance": float(value)})
+    result = pd.DataFrame([
+        {
+            "feature": col,
+            "built_in_impurity_importance": grouped_builtin[col],
+            "permutation_ap_mean": float(perm.importances_mean[i]),
+            "permutation_ap_std": float(perm.importances_std[i]),
+        }
+        for i, col in enumerate(raw_columns)
+    ]).sort_values("permutation_ap_mean", ascending=False)
+    result.to_csv(OUTPUTS_DIR / "feature_importance.csv", index=False)
+    pd.DataFrame(rows_encoded).to_csv(OUTPUTS_DIR / "feature_importance_encoded.csv", index=False)
+    return result, pd.DataFrame(rows_encoded)
+
+
+def gini_impurity(y: np.ndarray, sample_weight: np.ndarray | None = None) -> float:
+    y = np.asarray(y)
+    if y.size == 0:
+        return 0.0
+    weights = np.ones(y.size, dtype=float) if sample_weight is None else np.asarray(sample_weight, dtype=float)
+    total = weights.sum()
+    if total <= 0:
+        return 0.0
+    _, inverse = np.unique(y, return_inverse=True)
+    class_weights = np.bincount(inverse, weights=weights)
+    probabilities = class_weights / total
+    return float(1.0 - np.square(probabilities).sum())
+
+
+def find_best_root_split_scratch(X, y, feature_names, sample_weight=None) -> dict:
+    """Find the maximum weighted Gini decrease in O(p N log N)."""
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y)
+    weights = np.ones(len(y), dtype=float) if sample_weight is None else np.asarray(sample_weight, dtype=float)
+    classes, inverse = np.unique(y, return_inverse=True)
+    total_weight = weights.sum()
+    parent = gini_impurity(y, weights)
+    best = {"feature": None, "feature_index": -1, "threshold": np.nan, "information_gain": -np.inf}
+    for j in range(X.shape[1]):
+        order = np.argsort(X[:, j], kind="mergesort")
+        sorted_x = X[order, j]
+        sorted_w = weights[order]
+        sorted_y = inverse[order]
+        cumulative = np.zeros((len(classes), len(y)), dtype=float)
+        for c in range(len(classes)):
+            cumulative[c] = np.cumsum(sorted_w * (sorted_y == c))
+        valid = np.flatnonzero(sorted_x[:-1] < sorted_x[1:])
+        if valid.size == 0:
+            continue
+        left_class = cumulative[:, valid]
+        left_weight = left_class.sum(axis=0)
+        right_class = cumulative[:, -1, None] - left_class
+        right_weight = total_weight - left_weight
+        left_gini = 1.0 - np.square(left_class / left_weight).sum(axis=0)
+        right_gini = 1.0 - np.square(right_class / right_weight).sum(axis=0)
+        gains = parent - (left_weight / total_weight) * left_gini - (right_weight / total_weight) * right_gini
+        local = int(np.argmax(gains))
+        gain = float(gains[local])
+        if gain > best["information_gain"] + 1e-15:
+            k = int(valid[local])
+            best = {
+                "feature": str(feature_names[j]),
+                "feature_index": int(j),
+                "threshold": float(sorted_x[k] / 2.0 + sorted_x[k + 1] / 2.0),
+                "information_gain": gain,
+                "left_gini": float(left_gini[local]),
+                "right_gini": float(right_gini[local]),
+                "left_weight": float(left_weight[local]),
+                "right_weight": float(right_weight[local]),
+            }
+    return best
+
+
+def verify_gini_against_sklearn(X_train_transformed, y_train, feature_names) -> pd.DataFrame:
+    records = []
+    for label, sample_weight in (
+        ("unweighted", None),
+        ("balanced", __import__("sklearn.utils.class_weight", fromlist=["compute_sample_weight"]).compute_sample_weight("balanced", y_train)),
+    ):
+        scratch = find_best_root_split_scratch(X_train_transformed, y_train, feature_names, sample_weight)
+        tree = DecisionTreeClassifier(max_depth=1, criterion="gini", random_state=RANDOM_STATE)
+        tree.fit(X_train_transformed, y_train, sample_weight=sample_weight)
+        tr = tree.tree_
+        left, right = tr.children_left[0], tr.children_right[0]
+        total = tr.weighted_n_node_samples[0]
+        sklearn_gain = float(tr.impurity[0] - (tr.weighted_n_node_samples[left] / total) * tr.impurity[left] - (tr.weighted_n_node_samples[right] / total) * tr.impurity[right])
+        diff = abs(float(scratch["information_gain"]) - sklearn_gain)
+        records.append({
+            "weighting": label,
+            "scratch_feature": scratch["feature"],
+            "scratch_threshold": scratch["threshold"],
+            "scratch_information_gain": scratch["information_gain"],
+            "sklearn_feature": str(feature_names[tr.feature[0]]),
+            "sklearn_threshold": float(tr.threshold[0]),
+            "sklearn_information_gain": sklearn_gain,
+            "absolute_gain_difference": diff,
+        })
+    result = pd.DataFrame(records)
+    if result["absolute_gain_difference"].max() >= 1e-6:
+        raise AssertionError("Scratch weighted Gini gain does not match scikit-learn within 1e-6.")
+    return result
+
+
+def gradient_boosting_scratch_binary(
+    X, y, n_estimators: int = 5, learning_rate: float = 0.1,
+    max_depth: int = 3, random_state: int = RANDOM_STATE,
+) -> dict:
+    """Reproduce sklearn's binary logistic boosting stages with Newton leaf updates."""
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float)
+    p0 = float(y.mean())
+    initial = float(np.log(p0 / (1.0 - p0)))
+    score = np.full(y.shape[0], initial, dtype=float)
+    trees, leaf_values, loss_history = [], [], []
+    rng = np.random.RandomState(random_state)
+    for _ in range(n_estimators):
+        probability = expit(score)
+        residual = y - probability
+        seed = int(rng.randint(np.iinfo(np.int32).max))
+        tree = DecisionTreeRegressor(max_depth=max_depth, random_state=seed)
+        tree.fit(X, residual)
+        leaves = tree.apply(X)
+        gamma_map = {}
+        for leaf in np.unique(leaves):
+            mask = leaves == leaf
+            numerator = residual[mask].sum()
+            denominator = (probability[mask] * (1.0 - probability[mask])).sum()
+            gamma_map[int(leaf)] = float(numerator / denominator)
+        update = np.array([gamma_map[int(leaf)] for leaf in leaves])
+        score += learning_rate * update
+        trees.append(tree)
+        leaf_values.append(gamma_map)
+        probability_after = np.clip(expit(score), 1e-15, 1 - 1e-15)
+        loss_history.append(float(-np.mean(y * np.log(probability_after) + (1-y) * np.log(1-probability_after))))
+
+    reference = GradientBoostingClassifier(
+        n_estimators=n_estimators, max_depth=max_depth, learning_rate=learning_rate,
+        random_state=random_state,
+    ).fit(X, y.astype(int))
+    reference_scores = reference.decision_function(X)
+    max_abs_diff = float(np.max(np.abs(score - reference_scores)))
+    if max_abs_diff >= 1e-12:
+        raise AssertionError(f"Scratch boosting mismatch: max absolute difference {max_abs_diff:.3g}")
+    return {
+        "initial_log_odds": initial,
+        "trees": trees,
+        "leaf_values": leaf_values,
+        "decision_function": score,
+        "reference_decision_function": reference_scores,
+        "max_abs_diff": max_abs_diff,
+        "log_loss_by_stage": loss_history,
+        "reference_model": reference,
+    }
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\pipeline.py =====
+
+"""End-to-end training, evaluation, reporting, and artifact generation."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+
+from .config import (
+    IMAGES_DIR,
+    MAJORITY_CLASS_BASELINE,
+    MODELS_DIR,
+    OUTPUTS_DIR,
+    RANDOM_STATE,
+    RAW_DATA_PATH,
+    SCENARIO_FEATURES,
+    TARGET_COL,
+    ensure_directories,
+)
+from .evaluate import (
+    compute_classification_metrics,
+    evaluate_final_test,
+    optimize_oof_threshold,
+    run_scenario_comparison,
+)
+from .explainability import (
+    extract_feature_importances,
+    gradient_boosting_scratch_binary,
+    verify_gini_against_sklearn,
+)
+from .preprocessing import clean_domain_outliers, load_raw_data, split_train_test
+from .tuning import evaluate_baselines_cv, run_hyperparameter_tuning
+from .visualize import create_all_visuals
+
+
+def _markdown_table(frame: pd.DataFrame, columns: list[str] | None = None) -> str:
+    selected = frame.loc[:, columns] if columns else frame
+    headers = [str(column) for column in selected.columns]
+
+    def render(value):
+        if isinstance(value, (float, np.floating)):
+            return "—" if np.isnan(value) else f"{value:.4f}"
+        if isinstance(value, (int, np.integer)):
+            return str(int(value))
+        return str(value).replace("|", "\\|").replace("\n", " ")
+
+    rows = ["| " + " | ".join(headers) + " |", "| " + " | ".join(["---"] * len(headers)) + " |"]
+    rows.extend("| " + " | ".join(render(value) for value in row) + " |" for row in selected.itertuples(index=False, name=None))
+    return "\n".join(rows)
+
+
+def _write_reports(raw, cleaned, X_train, y_train, X_test, y_test, baseline, cv_results,
+                   threshold_table, t_opt, t_recall70, test_results, comparison,
+                   gini_results, scratch, importance, best_name, dataset_sha):
+    missing = int(cleaned.person_emp_length.isna().sum())
+    missing_default = float(cleaned.loc[cleaned.person_emp_length.isna(), TARGET_COL].mean())
+    present_default = float(cleaned.loc[cleaned.person_emp_length.notna(), TARGET_COL].mean())
+    majority = float(max(cleaned[TARGET_COL].mean(), 1 - cleaned[TARGET_COL].mean()))
+    grade_table = raw.groupby("loan_grade", observed=True).agg(
+        n=(TARGET_COL, "size"), default_rate=(TARGET_COL, "mean"),
+        prior_default_share=("cb_person_default_on_file", lambda s: (s == "Y").mean()),
+        mean_rate=("loan_int_rate", "mean"),
+    ).reset_index()
+    grade_table["default_rate"] = grade_table.default_rate.map(lambda x: f"{x:.2%}")
+    grade_table["prior_default_share"] = grade_table.prior_default_share.map(lambda x: f"{x:.2%}")
+    grade_table["mean_rate"] = grade_table.mean_rate.map(lambda x: f"{x:.2f}%")
+    grade_table["n"] = grade_table.n.map(lambda x: f"{x:,}")
+    test_show = test_results.copy()
+    for col in ("ap", "roc_auc", "f1", "precision", "recall", "accuracy"):
+        test_show[col] = test_show[col].map(lambda x: f"{x:.4f}")
+    method = f'''# Phương pháp
+
+## Mục tiêu và thời điểm dự đoán
+
+Đây là bài toán phân loại nhị phân dự đoán `loan_status` (1 = vỡ nợ). Kịch bản chính **B / Pre-Decision** chỉ dùng thông tin có sẵn khi nhận hồ sơ. Kịch bản đối chứng **A / Full-Feature** thêm `loan_grade` và `loan_int_rate`; đây là các biến được tạo trong quá trình thẩm định/định giá và có quan hệ rất mạnh với nhãn. Kịch bản A dùng để minh họa rò rỉ nghiệp vụ, không phải phương án triển khai trước quyết định.
+
+## Kiểm toán và làm sạch
+
+Nguồn có {len(raw):,} dòng và {raw.shape[1]} cột; có {int(raw.duplicated().sum()):,} dòng trùng hoàn toàn. Áp dụng đúng quy tắc miền: loại bản trùng, tuổi trên 100, và số năm làm việc trên 60; NaN trong `person_emp_length` được giữ bằng điều kiện rõ ràng. Kết quả là {len(cleaned):,} dòng. Archive thực tế còn **{missing}** giá trị thiếu `person_emp_length` sau lọc (tỷ lệ vỡ nợ {missing_default:.2%}, so với {present_default:.2%} ở nhóm có dữ liệu). Con số 889 trong bản mô tả đi kèm không khớp với CSV được cung cấp; báo cáo này dùng số đo từ dữ liệu.
+
+## Chia dữ liệu và tiền xử lý
+
+Một lần chia train/test stratified 80/20, `random_state=42`, tạo {len(X_train):,} dòng train và {len(X_test):,} dòng test. Mọi bước học tham số—median/mode imputation, one-hot encoding, và mô hình—nằm trong `Pipeline`/`ColumnTransformer`, nên được fit riêng trong từng fold. Không lưu bảng đã impute trước CV. `person_emp_length` có cờ missing do `SimpleImputer(add_indicator=True)`.
+
+Không dùng StandardScaler/MinMaxScaler: cây quyết định phân vùng theo thứ tự và ngưỡng `x_j <= tau`; phép đổi tỷ lệ đơn điệu dương không đổi thứ tự quan sát, nên không thay đổi các phân vùng ứng viên của cây.
+
+## Đánh giá, chọn mô hình và ngưỡng
+
+Dùng `StratifiedKFold(5, shuffle=True, random_state=42)`. Metric chọn/tuning chính là **Average Precision (AP)**, tương ứng `sklearn.metrics.average_precision_score`; ROC-AUC, F1, precision, recall và accuracy được báo cáo bổ sung. Accuracy được đặt cạnh baseline lớp đa số ({majority:.2%} sau làm sạch; {MAJORITY_CLASS_BASELINE:.2%} trên CSV gốc), không dùng để chọn mô hình.
+
+So sánh mô hình thường và `class_weight='balanced'` cho Decision Tree/Random Forest. Với boosting cân bằng, `compute_sample_weight('balanced', y)` được tính ngay trong `fit` trên nhãn của fold hiện tại. Ngưỡng được chọn trên xác suất Out-of-Fold của train: `t_opt={t_opt:.2f}` tối đa F1; `t_recall70={t_recall70:.2f}` là ngưỡng cao nhất giữ recall ít nhất 0.70. Test được dùng ở bước cuối để tính xác suất một lần, sau đó cùng xác suất được tổng hợp ở 0.50 và `t_opt`.
+
+## Giải thích và kiểm chứng toán học
+
+Độ quan trọng impurity tích hợp của mô hình cây được gom về cột nguồn sau one-hot; permutation importance trên AP được tính trên mẫu train giữ lại riêng cho giải thích. Các mức quan trọng là mô tả phụ thuộc dự đoán, không phải quan hệ nhân quả. Đa cộng tuyến/các biến tương quan có thể chia sẻ hoặc làm lệch tầm quan trọng.
+
+Gini và mức giảm impurity ở nút gốc được tính từ đầu bằng sắp xếp và tổng tích lũy, rồi đối chiếu với `DecisionTreeClassifier(max_depth=1)`. Cài đặt boosting nhị phân từ đầu dùng pseudo-residual `y-p` và cập nhật lá Newton `sum(y-p)/sum(p(1-p))`; kết quả được so sánh trực tiếp với 5-stage scikit-learn.
+
+## Tái lập
+
+```bash
+python -m pip install -r requirements.txt
+python -m src.pipeline
+pytest -v
+jupyter nbconvert --to notebook --execute --inplace notebooks/Nhom9_CreditRisk_Lab.ipynb
+```
+
+Dataset SHA-256: `{dataset_sha}`. Mọi đường dẫn được suy ra từ vị trí repository; các phép biến đổi không tạo `data/processed/`.
+'''
+    (Path(__file__).resolve().parents[1] / "docs" / "methodology.md").write_text(method, encoding="utf-8")
+
+    cv_show = cv_results[["model", "AP_mean", "AP_std", "ROC_AUC_mean", "ROC_AUC_std", "F1_mean", "F1_std", "Precision_mean", "Recall_mean"]].copy()
+    cv_show.columns = ["Model", "AP mean", "AP SD", "ROC-AUC mean", "ROC-AUC SD", "F1 mean", "F1 SD", "Precision", "Recall"]
+    for col in cv_show.columns[1:]:
+        cv_show[col] = cv_show[col].map(lambda x: f"{x:.4f}")
+    comparison_show = comparison[["scenario_name", "evaluation", "ap", "roc_auc", "f1", "precision", "recall", "accuracy", "tn", "fp", "fn", "tp"]].copy()
+    test_baseline = pd.DataFrame([{
+        "Evaluation": "Majority-class baseline (cleaned data)", "Accuracy": f"{majority:.4f}",
+        "AP": "—", "ROC-AUC": "—", "F1": "—", "Precision": "—", "Recall": "—",
+    }])
+    results = f'''# Kết quả thực nghiệm
+
+## Dữ liệu và lớp đa số
+
+CSV gốc: {len(raw):,} × {raw.shape[1]}; sau xử lý miền: {len(cleaned):,}. Tập train/test: {len(X_train):,}/{len(X_test):,}. Tỷ lệ nhãn 1 sau làm sạch: {cleaned[TARGET_COL].mean():.2%}; baseline accuracy lớp đa số: **{majority:.2%}**. Chỉ số thiếu việc làm đo trên dữ liệu đã làm sạch: {missing} ({missing/len(cleaned):.2%}); tỷ lệ default nhóm thiếu là {missing_default:.2%}, nhóm có giá trị {present_default:.2%}.
+
+## Baseline CV
+
+{_markdown_table(baseline[['model','weighting','AP_mean','AP_std','ROC_AUC_mean','F1_mean','Precision_mean','Recall_mean','Accuracy_mean']].round(4))}
+
+## Mô hình tuned, 5-fold CV trên train
+
+Mô hình được chọn theo AP: **{best_name}**.
+
+{_markdown_table(cv_show)}
+
+## Ngưỡng OOF và đánh giá test cuối cùng
+
+`t_opt={t_opt:.2f}`; `t_recall70={t_recall70:.2f}`. AP/ROC-AUC không phụ thuộc ngưỡng; các metric phân loại thay đổi theo ngưỡng. Accuracy được đọc cùng baseline {majority:.2%}, không dùng làm tiêu chí chọn.
+
+{_markdown_table(test_show[['evaluation','ap','roc_auc','f1','precision','recall','accuracy','tn','fp','fn','tp']])}
+
+## So sánh thời điểm đặc trưng
+
+{_markdown_table(comparison_show.round(4))}
+
+Scenario A có các tín hiệu hậu thẩm định; chênh lệch của nó với B đo mức phụ thuộc mô hình vào các biến này, không phải ước lượng hiệu quả triển khai trước quyết định.
+
+## Tầm quan trọng biến và kiểm chứng từ đầu
+
+{_markdown_table(importance.round(5))}
+
+{_markdown_table(gini_results.round(10))}
+
+Sai số tuyệt đối tối đa của boosting từ đầu so với `GradientBoostingClassifier`: **{scratch['max_abs_diff']:.3e}**.
+
+Các bảng đầy đủ, bao gồm tuning candidates và threshold sweep, nằm trong `outputs/`; 14 hình nằm trong `docs/images/`.
+'''
+    (Path(__file__).resolve().parents[1] / "docs" / "results.md").write_text(results, encoding="utf-8")
+    readme = f'''# Nhom9_CreditRisk
+
+Phân tích và phân loại rủi ro vỡ nợ khoản vay bằng Decision Tree, Random Forest và Gradient Boosting. Mục tiêu là `loan_status` (1 = vỡ nợ).
+
+## Thời điểm dự đoán và rò rỉ
+
+Kịch bản **B / Pre-Decision** là kết quả chính, chỉ dùng 9 đặc trưng sẵn có khi nhận hồ sơ. Kịch bản **A / Full-Feature** thêm `loan_grade` và `loan_int_rate`, hai biến hình thành trong thẩm định/định giá, để đo lượng thông tin hậu quyết định lọt vào mô hình. Không dùng A làm mô hình triển khai trước quyết định.
+
+## Kết quả chạy trên CSV đi kèm
+
+- Sau làm sạch theo quy tắc miền: **{len(cleaned):,}** dòng; train/test: **{len(X_train):,}/{len(X_test):,}**.
+- Mô hình chọn theo 5-fold CV Average Precision (AP): **{best_name}**.
+- AP test: **{float(test_results.iloc[0].ap):.4f}**; F1 tại ngưỡng OOF `t_opt={t_opt:.2f}`: **{float(test_results.iloc[1].f1):.4f}**.
+- Baseline accuracy lớp đa số: **{majority:.2%}** trên dữ liệu đã làm sạch (CSV gốc: {MAJORITY_CLASS_BASELINE:.2%}); accuracy không dùng để chọn mô hình.
+
+CSV archive thực tế có {missing} giá trị thiếu `person_emp_length` sau lọc. Bản mô tả đầu vào ghi 889; số đo trên archive là 887, và mã kiểm tra/report dùng con số quan sát được.
+
+## Cấu trúc
+
+`src/` chứa pipeline, tiền xử lý, tuning, đánh giá, giải thích, trực quan hóa và CLI dự đoán. `notebooks/` có notebook báo cáo thực thi. `data/raw/` giữ dữ liệu nguồn. `outputs/`, `models/`, `docs/` lưu kết quả tái lập. Không tạo `data/processed/`.
+
+## Cài đặt và chạy
+
+```bash
+python -m pip install -r requirements.txt
+python -m src.pipeline
+pytest -v
+jupyter nbconvert --to notebook --execute --inplace notebooks/Nhom9_CreditRisk_Lab.ipynb
+```
+
+Chạy inference với CSV hồ sơ mới có đủ các cột Scenario B:
+
+```bash
+python -m src.predict --input path/to/new_applicants.csv --output path/to/predictions.csv
+```
+
+Mở `notebooks/Nhom9_CreditRisk_Lab.ipynb` trong Jupyter để xem EDA, phương pháp, kết quả và kiểm chứng from-scratch. Chi tiết phương pháp ở [docs/methodology.md](docs/methodology.md), số liệu đầy đủ ở [docs/results.md](docs/results.md).
+'''
+    (Path(__file__).resolve().parents[1] / "README.md").write_text(readme, encoding="utf-8")
+
+
+def run_pipeline() -> dict:
+    ensure_directories()
+    raw = load_raw_data()
+    cleaned = clean_domain_outliers(raw)
+    X_train, X_test, y_train, y_test = split_train_test(cleaned, "B")
+    X_train_a, X_test_a, y_train_a, y_test_a = split_train_test(cleaned, "A")
+    if len(X_train) != 25927 or len(X_test) != 6482:
+        raise AssertionError("Unexpected stratified split size.")
+    if list(X_train.columns) != SCENARIO_FEATURES["B"] or not set(X_train.index).isdisjoint(X_test.index):
+        raise AssertionError("Feature definition or train/test partition is invalid.")
+    if "loan_grade" in X_train or "loan_int_rate" in X_train or TARGET_COL in X_train:
+        raise AssertionError("Scenario B contains a target or post-underwriting feature.")
+
+    digest = hashlib.sha256(RAW_DATA_PATH.read_bytes()).hexdigest()
+    metadata_file = MODELS_DIR / "model_metadata.json"
+    checkpoint_files = [
+        OUTPUTS_DIR / name for name in (
+            "baseline_results.csv", "tuning_dt.csv", "tuning_rf.csv", "tuning_gbm.csv",
+            "cv_results.csv", "threshold_analysis.csv", "test_results.csv",
+            "scenario_comparison.csv", "feature_importance.csv",
+            "gini_scratch_verification.csv", "scratch_boosting_verification.json",
+        )
+    ]
+    model_file = MODELS_DIR / "final_model_pipeline.joblib"
+    if metadata_file.exists() and model_file.exists() and all(path.exists() for path in checkpoint_files):
+        saved_metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+        if saved_metadata.get("dataset_sha256") == digest:
+            print("[resume] Tuning and scoring outputs found; completing report artifacts", flush=True)
+            best_name = saved_metadata["model_name"]
+            best_pipeline = joblib.load(model_file)
+            baseline = pd.read_csv(OUTPUTS_DIR / "baseline_results.csv")
+            cv_results = pd.read_csv(OUTPUTS_DIR / "cv_results.csv")
+            threshold_table = pd.read_csv(OUTPUTS_DIR / "threshold_analysis.csv")
+            test_results = pd.read_csv(OUTPUTS_DIR / "test_results.csv")
+            comparison = pd.read_csv(OUTPUTS_DIR / "scenario_comparison.csv")
+            importance = pd.read_csv(OUTPUTS_DIR / "feature_importance.csv")
+            gini_results = pd.read_csv(OUTPUTS_DIR / "gini_scratch_verification.csv")
+            scratch_saved = json.loads((OUTPUTS_DIR / "scratch_boosting_verification.json").read_text(encoding="utf-8"))
+            scratch = {**scratch_saved}
+            t_opt = float(saved_metadata["optimal_threshold"])
+            t_recall70 = saved_metadata["recall_70_threshold"]
+            if t_recall70 is not None:
+                t_recall70 = float(t_recall70)
+            probability_file = OUTPUTS_DIR / "test_probabilities.npy"
+            if probability_file.exists():
+                probabilities = np.load(probability_file)
+            else:
+                probabilities = best_pipeline.predict_proba(X_test)[:, 1]
+                np.save(probability_file, probabilities)
+            create_all_visuals(
+                raw, cleaned, baseline, cv_results, threshold_table, y_test,
+                probabilities, t_opt, importance, best_pipeline, X_train, y_train,
+                gini_results, scratch,
+            )
+            _write_reports(
+                raw, cleaned, X_train, y_train, X_test, y_test, baseline, cv_results,
+                threshold_table, t_opt, t_recall70, test_results, comparison,
+                gini_results, scratch, importance, best_name, digest,
+            )
+            return {
+                "best_name": best_name, "best_pipeline": best_pipeline,
+                "threshold_table": threshold_table, "t_opt": t_opt,
+                "t_recall70": t_recall70, "test_results": test_results,
+                "comparison": comparison, "gini_results": gini_results,
+                "scratch_boost": scratch, "feature_importance": importance,
+            }
+
+    print("[1/8] Baseline cross-validation (Scenario B)", flush=True)
+    baseline = evaluate_baselines_cv(X_train, y_train, "B")
+    print("[2/8] AP-led hyperparameter tuning (balanced models)", flush=True)
+    tuning = run_hyperparameter_tuning(X_train, y_train, "B", balanced=True)
+    cv_results = tuning["cv_results"]
+    best_name = str(cv_results.iloc[0].model)
+    best_pipeline = tuning["best_estimators"][best_name]
+
+    print("[3/8] OOF threshold selection", flush=True)
+    threshold_table, t_opt, t_recall70, oof_probs = optimize_oof_threshold(best_pipeline, X_train, y_train)
+    print("[4/8] Final test evaluation", flush=True)
+    probabilities = best_pipeline.predict_proba(X_test)[:, 1]
+    np.save(OUTPUTS_DIR / "test_probabilities.npy", probabilities)
+    rows = []
+    for label, threshold in (("default_0.50", 0.5), ("oof_t_opt", t_opt)):
+        rows.append({"model": best_name, "scenario": "B", "evaluation": label,
+                     **compute_classification_metrics(y_test, probabilities, threshold)})
+    test_results = pd.DataFrame(rows)
+    test_results.to_csv(OUTPUTS_DIR / "test_results.csv", index=False)
+
+    print("[5/8] Pre-decision vs full-feature comparison", flush=True)
+    comparison = run_scenario_comparison(
+        X_train, y_train, X_test, y_test,
+        X_train_a, y_train_a, X_test_a, y_test_a,
+        best_pipeline,
+        precomputed_b=(probabilities, t_opt),
+    )
+    print("[6/8] Explainability and mathematical checks", flush=True)
+    # A reproducible 5,000-row training-only subset limits compute for permutation importance.
+    X_imp, _, y_imp, _ = train_test_split(
+        X_train, y_train, train_size=min(5000, len(X_train)),
+        stratify=y_train, random_state=RANDOM_STATE,
+    )
+    importance, encoded_importance = extract_feature_importances(best_pipeline, X_imp, y_imp)
+    transformed = best_pipeline.named_steps["preprocessor"].transform(X_train)
+    feature_names = best_pipeline.named_steps["preprocessor"].get_feature_names_out().tolist()
+    gini_results = verify_gini_against_sklearn(transformed, y_train.to_numpy(), feature_names)
+    scratch = gradient_boosting_scratch_binary(
+        transformed, y_train.to_numpy(), n_estimators=5, learning_rate=0.1,
+        max_depth=3, random_state=RANDOM_STATE,
+    )
+    gini_results.to_csv(OUTPUTS_DIR / "gini_scratch_verification.csv", index=False)
+    (OUTPUTS_DIR / "scratch_boosting_verification.json").write_text(
+        json.dumps({
+            "max_abs_diff": scratch["max_abs_diff"],
+            "log_loss_by_stage": scratch["log_loss_by_stage"],
+            "initial_log_odds": scratch["initial_log_odds"],
+        }, indent=2),
+        encoding="utf-8",
+    )
+
+    model_file = MODELS_DIR / "final_model_pipeline.joblib"
+    metadata_file = MODELS_DIR / "model_metadata.json"
+    joblib.dump(best_pipeline, model_file, compress=3)
+    digest = hashlib.sha256(RAW_DATA_PATH.read_bytes()).hexdigest()
+    metadata = {
+        "scenario": "B",
+        "scenario_name": "pre_decision",
+        "model_name": best_name,
+        "input_columns": SCENARIO_FEATURES["B"],
+        "target_column": TARGET_COL,
+        "positive_class": 1,
+        "optimal_threshold": float(t_opt),
+        "recall_70_threshold": None if np.isnan(t_recall70) else float(t_recall70),
+        "risk_bands": {"low_max": 0.10, "medium_max": 0.30},
+        "random_state": RANDOM_STATE,
+        "dataset_sha256": digest,
+        "test_ap": float(test_results.iloc[0].ap),
+    }
+    metadata_file.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    print("[7/8] Writing report tables and figures", flush=True)
+    create_all_visuals(
+        raw, cleaned, baseline, cv_results, threshold_table, y_test,
+        probabilities, t_opt, importance, best_pipeline, X_train, y_train,
+        gini_results, scratch,
+    )
+    _write_reports(
+        raw, cleaned, X_train, y_train, X_test, y_test, baseline, cv_results,
+        threshold_table, t_opt, t_recall70, test_results, comparison,
+        gini_results, scratch, importance, best_name, digest,
+    )
+    print("[8/8] Model and reports saved", flush=True)
+    return {
+        "best_name": best_name,
+        "best_pipeline": best_pipeline,
+        "threshold_table": threshold_table,
+        "t_opt": t_opt,
+        "t_recall70": t_recall70,
+        "test_results": test_results,
+        "comparison": comparison,
+        "gini_results": gini_results,
+        "scratch_boost": scratch,
+        "feature_importance": importance,
+    }
+
+
+if __name__ == "__main__":
+    run_pipeline()
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\predict.py =====
+
+"""Load the trained pipeline and score new applicant rows."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import joblib
+import pandas as pd
+
+from .config import MODELS_DIR
+
+
+def predict_dataframe(df_input: pd.DataFrame, model_path=None, metadata_path=None) -> pd.DataFrame:
+    """Return input columns plus probability, locked label, and risk band."""
+    model_file = Path(model_path) if model_path else MODELS_DIR / "final_model_pipeline.joblib"
+    metadata_file = Path(metadata_path) if metadata_path else MODELS_DIR / "model_metadata.json"
+    if not model_file.exists() or not metadata_file.exists():
+        raise FileNotFoundError("Run `python -m src.pipeline` to create the model artifact first.")
+    metadata = json.loads(metadata_file.read_text(encoding="utf-8"))
+    required = metadata["input_columns"]
+    missing = [column for column in required if column not in df_input.columns]
+    if missing:
+        raise ValueError(f"Input is missing required columns: {missing}")
+    model = joblib.load(model_file)
+    result = df_input.copy()
+    probabilities = model.predict_proba(df_input.loc[:, required])[:, 1]
+    threshold = float(metadata["optimal_threshold"])
+    result["default_probability"] = probabilities
+    result["predicted_default"] = (probabilities >= threshold).astype(int)
+    low_max = float(metadata["risk_bands"]["low_max"])
+    medium_max = float(metadata["risk_bands"]["medium_max"])
+    result["risk_level"] = pd.cut(
+        probabilities,
+        bins=[-float("inf"), low_max, medium_max, float("inf")],
+        labels=["LOW", "MEDIUM", "HIGH"],
+        right=False,
+    ).astype(str)
+    return result
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Score applicant records with the trained credit-risk model.")
+    parser.add_argument("--input", required=True, help="CSV containing the scenario's input columns")
+    parser.add_argument("--output", required=True, help="Destination CSV for predictions")
+    args = parser.parse_args(argv)
+    predictions = predict_dataframe(pd.read_csv(args.input))
+    output = Path(args.output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    predictions.to_csv(output, index=False)
+    print(f"Wrote {len(predictions):,} predictions to {output}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\preprocessing.py =====
+
+"""Data loading, domain cleaning, preprocessing, and model construction."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.base import BaseEstimator
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import (
+    GradientBoostingClassifier,
+    RandomForestClassifier,
+)
+from sklearn.impute import SimpleImputer
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder, OrdinalEncoder
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.utils.class_weight import compute_sample_weight
+
+from .config import (
+    RANDOM_STATE,
+    RAW_DATA_PATH,
+    SCENARIO_A_BINARY,
+    SCENARIO_A_NOMINAL,
+    SCENARIO_A_NUMERIC,
+    SCENARIO_A_ORDINAL,
+    SCENARIO_B_BINARY,
+    SCENARIO_B_NOMINAL,
+    SCENARIO_B_NUMERIC,
+    SCENARIO_FEATURES,
+    TARGET_COL,
+    TEST_SIZE,
+)
+
+
+def load_raw_data(path: str | Path = RAW_DATA_PATH) -> pd.DataFrame:
+    """Load the untouched source CSV."""
+    frame = pd.read_csv(path)
+    if frame.shape != (32581, 12):
+        raise ValueError(f"Unexpected source shape {frame.shape}; expected (32581, 12).")
+    return frame
+
+
+def clean_domain_outliers(df: pd.DataFrame) -> pd.DataFrame:
+    """Remove exact duplicates and impossible domain values, preserving missing tenure."""
+    cleaned = df.drop_duplicates().copy()
+    cleaned = cleaned[
+        (cleaned["person_age"] <= 100)
+        & ((cleaned["person_emp_length"] <= 60) | cleaned["person_emp_length"].isna())
+    ].copy()
+    if len(cleaned) != 32409:
+        raise AssertionError(f"Expected 32409 cleaned rows, got {len(cleaned)}")
+    # The attached specification's 889-row missingness figure does not match this archive.
+    # Preserve and report the observed count; do not turn an incorrect figure into a test.
+    if cleaned["person_emp_length"].isna().sum() != 887:
+        raise AssertionError("Unexpected person_emp_length missing count after domain cleaning.")
+    return cleaned.reset_index(drop=True)
+
+
+def split_train_test(
+    df: pd.DataFrame, scenario: str = "B"
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+    """Create the single stratified holdout split for the chosen feature scenario."""
+    scenario = scenario.upper()
+    if scenario not in SCENARIO_FEATURES:
+        raise ValueError("scenario must be 'A' or 'B'")
+    X = df.loc[:, SCENARIO_FEATURES[scenario]].copy()
+    y = df[TARGET_COL].astype(int).copy()
+    return train_test_split(
+        X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
+    )
+
+
+def build_preprocessor(scenario: str = "B") -> ColumnTransformer:
+    """Build fold-local imputers and encoders. No scaling is needed for trees."""
+    scenario = scenario.upper()
+    if scenario == "B":
+        numeric, nominal, binary, ordinal = (
+            SCENARIO_B_NUMERIC, SCENARIO_B_NOMINAL, SCENARIO_B_BINARY, []
+        )
+    elif scenario == "A":
+        numeric, nominal, binary, ordinal = (
+            SCENARIO_A_NUMERIC, SCENARIO_A_NOMINAL, SCENARIO_A_BINARY, SCENARIO_A_ORDINAL
+        )
+    else:
+        raise ValueError("scenario must be 'A' or 'B'")
+
+    transformers: list[tuple[str, Pipeline, list[str]]] = [
+        ("numeric", SimpleImputer(strategy="median", add_indicator=True), numeric),
+        (
+            "nominal",
+            Pipeline([
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
+            ]),
+            nominal,
+        ),
+        (
+            "binary",
+            Pipeline([
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("ord", OrdinalEncoder(
+                    categories=[["N", "Y"]],
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1,
+                )),
+            ]),
+            binary,
+        ),
+    ]
+    if ordinal:
+        transformers.append((
+            "ordinal",
+            Pipeline([
+                ("imputer", SimpleImputer(strategy="most_frequent")),
+                ("ord", OrdinalEncoder(
+                    categories=[["A", "B", "C", "D", "E", "F", "G"]],
+                    handle_unknown="use_encoded_value",
+                    unknown_value=-1,
+                )),
+            ]),
+            ordinal,
+        ))
+    return ColumnTransformer(transformers=transformers, remainder="drop", verbose_feature_names_out=False)
+
+
+class BalancedGradientBoostingClassifier(GradientBoostingClassifier):
+    """Gradient boosting with fold-local balanced sample weights."""
+
+    def __init__(
+        self,
+        *,
+        loss="log_loss",
+        learning_rate=0.1,
+        n_estimators=100,
+        subsample=1.0,
+        criterion="deprecated",
+        min_samples_split=2,
+        min_samples_leaf=1,
+        min_weight_fraction_leaf=0.0,
+        max_depth=3,
+        min_impurity_decrease=0.0,
+        init=None,
+        random_state=None,
+        max_features=None,
+        verbose=0,
+        max_leaf_nodes=None,
+        warm_start=False,
+        validation_fraction=0.1,
+        n_iter_no_change=None,
+        tol=0.0001,
+        ccp_alpha=0.0,
+        use_balanced_weights=True,
+    ):
+        super().__init__(
+            loss=loss,
+            learning_rate=learning_rate,
+            n_estimators=n_estimators,
+            subsample=subsample,
+            criterion=criterion,
+            min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf,
+            min_weight_fraction_leaf=min_weight_fraction_leaf,
+            max_depth=max_depth,
+            min_impurity_decrease=min_impurity_decrease,
+            init=init,
+            random_state=random_state,
+            max_features=max_features,
+            verbose=verbose,
+            max_leaf_nodes=max_leaf_nodes,
+            warm_start=warm_start,
+            validation_fraction=validation_fraction,
+            n_iter_no_change=n_iter_no_change,
+            tol=tol,
+            ccp_alpha=ccp_alpha,
+        )
+        self.use_balanced_weights = use_balanced_weights
+
+    def fit(self, X, y, sample_weight=None, monitor=None):
+        if self.use_balanced_weights:
+            balanced = compute_sample_weight(class_weight="balanced", y=y)
+            sample_weight = balanced if sample_weight is None else balanced * np.asarray(sample_weight)
+        return super().fit(X, y, sample_weight=sample_weight, monitor=monitor)
+
+
+def get_candidate_models(balanced: bool = True, random_state: int = RANDOM_STATE) -> dict[str, BaseEstimator]:
+    weight = "balanced" if balanced else None
+    return {
+        "DecisionTree": DecisionTreeClassifier(
+            random_state=random_state, class_weight=weight
+        ),
+        "RandomForest": RandomForestClassifier(
+            n_estimators=150, random_state=random_state, class_weight=weight, n_jobs=1
+        ),
+        "GradientBoosting": BalancedGradientBoostingClassifier(
+            random_state=random_state, use_balanced_weights=balanced
+        ),
+    }
+
+
+def build_model_pipeline(estimator: BaseEstimator, scenario: str = "B") -> Pipeline:
+    return Pipeline([
+        ("preprocessor", build_preprocessor(scenario)),
+        ("classifier", estimator),
+    ])
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\tuning.py =====
+
+"""Cross-validated baselines and AP-led hyperparameter search."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+from sklearn.model_selection import (
+    GridSearchCV,
+    RandomizedSearchCV,
+    StratifiedKFold,
+    cross_validate,
+)
+
+from .config import CV_FOLDS, OUTPUTS_DIR, RANDOM_STATE
+from .preprocessing import build_model_pipeline, get_candidate_models
+
+SCORING = {
+    "AP": "average_precision",
+    "ROC_AUC": "roc_auc",
+    "F1": "f1",
+    "Precision": "precision",
+    "Recall": "recall",
+    "Accuracy": "accuracy",
+}
+
+
+def _cv() -> StratifiedKFold:
+    return StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
+
+
+def evaluate_baselines_cv(X_train, y_train, scenario: str = "B") -> pd.DataFrame:
+    """Compare unweighted and balanced model families on identical training folds."""
+    rows: list[dict] = []
+    for balanced in (False, True):
+        label = "Balanced" if balanced else "Unweighted"
+        for name, estimator in get_candidate_models(balanced=balanced).items():
+            pipeline = build_model_pipeline(estimator, scenario)
+            scores = cross_validate(
+                pipeline, X_train, y_train, cv=_cv(), scoring=SCORING,
+                n_jobs=-1, return_train_score=False, error_score="raise",
+            )
+            row = {"model": name, "weighting": label, "scenario": scenario.upper()}
+            for metric in SCORING:
+                row[f"{metric}_mean"] = float(scores[f"test_{metric}"].mean())
+                row[f"{metric}_std"] = float(scores[f"test_{metric}"].std(ddof=1))
+            rows.append(row)
+    result = pd.DataFrame(rows).sort_values("AP_mean", ascending=False)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    result.to_csv(OUTPUTS_DIR / "baseline_results.csv", index=False)
+    return result
+
+
+def get_search_spaces() -> dict:
+    """Return the prescribed search grids and sampling distributions."""
+    return {
+        "DecisionTree": {
+            "type": "grid",
+            "params": {
+                "classifier__criterion": ["gini", "entropy"],
+                "classifier__max_depth": [3, 5, 7, 10, 14, None],
+                "classifier__min_samples_split": [2, 10, 30],
+                "classifier__min_samples_leaf": [1, 5, 15, 30],
+            },
+        },
+        "RandomForest": {
+            "type": "random",
+            "n_iter": 25,
+            "params": {
+                "classifier__n_estimators": [150, 300],
+                "classifier__max_depth": [6, 10, 14, 18, None],
+                "classifier__min_samples_split": [2, 10, 25],
+                "classifier__min_samples_leaf": [1, 5, 15],
+                "classifier__max_features": ["sqrt", "log2", 0.5],
+            },
+        },
+        "GradientBoosting": {
+            "type": "random",
+            "n_iter": 25,
+            "params": {
+                "classifier__n_estimators": [100, 200, 300],
+                "classifier__learning_rate": [0.03, 0.05, 0.1],
+                "classifier__max_depth": [2, 3, 4, 5],
+                "classifier__subsample": [0.8, 1.0],
+                "classifier__min_samples_leaf": [10, 20, 50],
+                "classifier__max_features": ["sqrt", None],
+            },
+        },
+    }
+
+
+def run_hyperparameter_tuning(
+    X_train, y_train, scenario: str = "B", balanced: bool = True
+) -> dict:
+    """Tune all three families against AP and report CV metrics for each winner."""
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    candidates = get_candidate_models(balanced=balanced)
+    spaces = get_search_spaces()
+    best: dict = {}
+    summaries: list[dict] = []
+
+    for name, estimator in candidates.items():
+        pipeline = build_model_pipeline(estimator, scenario)
+        space = spaces[name]
+        common = dict(
+            estimator=pipeline,
+            scoring="average_precision",
+            cv=_cv(),
+            n_jobs=-1,
+            refit=True,
+            return_train_score=False,
+            error_score="raise",
+            pre_dispatch="2*n_jobs",
+        )
+        if space["type"] == "grid":
+            search = GridSearchCV(param_grid=space["params"], **common)
+        else:
+            search = RandomizedSearchCV(
+                param_distributions=space["params"],
+                n_iter=space["n_iter"],
+                random_state=RANDOM_STATE,
+                **common,
+            )
+        search.fit(X_train, y_train)
+        best[name] = search.best_estimator_
+        search_results = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
+        search_results.to_csv(OUTPUTS_DIR / f"tuning_{ {'DecisionTree':'dt','RandomForest':'rf','GradientBoosting':'gbm'}[name] }.csv", index=False)
+
+        cv_scores = cross_validate(
+            search.best_estimator_, X_train, y_train,
+            cv=_cv(), scoring=SCORING, n_jobs=-1,
+            return_train_score=False, error_score="raise",
+        )
+        row = {
+            "model": name,
+            "scenario": scenario.upper(),
+            "weighting": "Balanced" if balanced else "Unweighted",
+            "best_params": repr(search.best_params_),
+            "search_best_AP": float(search.best_score_),
+        }
+        for metric in SCORING:
+            row[f"{metric}_mean"] = float(cv_scores[f"test_{metric}"].mean())
+            row[f"{metric}_std"] = float(cv_scores[f"test_{metric}"].std(ddof=1))
+        summaries.append(row)
+
+    summary = pd.DataFrame(summaries).sort_values("AP_mean", ascending=False)
+    summary.to_csv(OUTPUTS_DIR / "cv_results.csv", index=False)
+    return {"best_estimators": best, "cv_results": summary}
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\visualize.py =====
+
+"""Create the report's 14 reproducible PNG figures."""
+
+from __future__ import annotations
+
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import seaborn as sns
+from sklearn.metrics import ConfusionMatrixDisplay, PrecisionRecallDisplay, RocCurveDisplay
+from sklearn.model_selection import validation_curve
+from sklearn.tree import plot_tree
+
+from .config import IMAGES_DIR, RANDOM_STATE
+from .preprocessing import build_model_pipeline
+from sklearn.tree import DecisionTreeClassifier
+
+sns.set_theme(style="whitegrid", context="notebook")
+
+
+def _save(fig, filename: str) -> None:
+    IMAGES_DIR.mkdir(parents=True, exist_ok=True)
+    fig.savefig(IMAGES_DIR / filename, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def create_all_visuals(
+    raw: pd.DataFrame,
+    cleaned: pd.DataFrame,
+    baseline: pd.DataFrame,
+    cv_results: pd.DataFrame,
+    threshold_table: pd.DataFrame,
+    y_test,
+    test_prob,
+    t_opt: float,
+    importance: pd.DataFrame,
+    best_pipeline,
+    X_train,
+    y_train,
+    gini_results: pd.DataFrame,
+    scratch_boost: dict,
+) -> None:
+    """Render all report figures using the actual run data."""
+    fig, ax = plt.subplots(figsize=(7, 4))
+    counts = raw["loan_status"].value_counts().sort_index()
+    ax.bar(["No default (0)", "Default (1)"], counts.values, color=["#4C78A8", "#F58518"])
+    ax.set(title="Target distribution in the supplied CSV", ylabel="Applications")
+    for i, value in enumerate(counts.values):
+        ax.text(i, value, f"{value:,} ({value / len(raw):.2%})", ha="center", va="bottom")
+    _save(fig, "1_eda_target_distribution.png")
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    miss = raw.isna().mean().mul(100).sort_values(ascending=False)
+    axes[0].bar(miss.index, miss.values, color="#72B7B2")
+    axes[0].set(title="Missing values in raw source", ylabel="Rows missing (%)")
+    axes[0].tick_params(axis="x", rotation=70)
+    axes[1].bar(
+        ["Age > 100", "Employment > 60"],
+        [(raw.person_age > 100).sum(), (raw.person_emp_length > 60).sum()],
+        color="#E45756",
+    )
+    axes[1].set(title="Domain-rule records in raw source", ylabel="Rows")
+    _save(fig, "1_eda_missing_and_outliers.png")
+
+    grade = raw.groupby("loan_grade", observed=True).agg(
+        default_rate=("loan_status", "mean"),
+        historical_default_share=("cb_person_default_on_file", lambda s: (s == "Y").mean()),
+        mean_interest_rate=("loan_int_rate", "mean"),
+        n=("loan_status", "size"),
+    ).reindex(list("ABCDEFG"))
+    fig, ax = plt.subplots(figsize=(9, 5))
+    xx = np.arange(len(grade))
+    ax.plot(xx, grade.default_rate, marker="o", label="Default rate")
+    ax.plot(xx, grade.historical_default_share, marker="s", label="Prior default on file")
+    ax.set_xticks(xx, [f"{g} (n={int(n):,})" for g, n in zip(grade.index, grade.n, strict=True)])
+    ax.set(ylabel="Share", title="Post-underwriting signals by loan grade", ylim=(0, 1.03))
+    ax2 = ax.twinx()
+    ax2.plot(xx, grade.mean_interest_rate, color="#E45756", marker="^", label="Mean interest rate")
+    ax2.set_ylabel("Mean interest rate (%)")
+    h1, l1 = ax.get_legend_handles_labels(); h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc="upper left")
+    _save(fig, "1_eda_grade_leakage_analysis.png")
+
+    cols = ["person_age", "person_income", "person_emp_length", "loan_amnt", "loan_int_rate", "loan_percent_income", "cb_person_cred_hist_length", "loan_status"]
+    corr = raw[cols].corr(numeric_only=True)
+    fig, ax = plt.subplots(figsize=(9, 7))
+    sns.heatmap(corr, cmap="vlag", center=0, annot=True, fmt=".2f", ax=ax)
+    ax.set_title("Numeric correlation in raw data")
+    _save(fig, "1_eda_correlation_heatmap.png")
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    labels = baseline["model"] + "\n" + baseline["weighting"]
+    ax.barh(labels, baseline.AP_mean, xerr=baseline.AP_std, color="#4C78A8", alpha=0.9)
+    ax.set(xlabel="Average Precision (AP)", title="Baseline 5-fold CV (Scenario B)")
+    _save(fig, "3_baseline_cv_comparison.png")
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    ordered = cv_results.sort_values("AP_mean")
+    ax.barh(ordered.model, ordered.AP_mean, xerr=ordered.AP_std, color="#54A24B")
+    ax.set(xlabel="Average Precision (AP)", title="Tuned balanced models · 5-fold CV")
+    _save(fig, "4_tuned_cv_comparison.png")
+
+    fig, ax1 = plt.subplots(figsize=(8, 4.5))
+    ax1.plot(threshold_table.threshold, threshold_table.f1, label="F1", color="#4C78A8")
+    ax1.plot(threshold_table.threshold, threshold_table.recall, label="Recall", color="#F58518")
+    ax1.plot(threshold_table.threshold, threshold_table.precision, label="Precision", color="#54A24B")
+    ax1.axvline(t_opt, ls="--", color="black", label=f"t_opt = {t_opt:.2f}")
+    ax1.axhline(0.70, ls=":", color="#E45756", label="Recall target = 0.70")
+    ax1.set(xlabel="Decision threshold", ylabel="Score", title="Threshold selection on training OOF predictions", ylim=(0, 1))
+    ax1.legend(ncol=2)
+    _save(fig, "5_threshold_optimization.png")
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    RocCurveDisplay.from_predictions(y_test, test_prob, ax=ax, name="Pre-decision model")
+    ax.plot([0, 1], [0, 1], ls="--", color="gray")
+    ax.set_title("ROC curve · held-out test")
+    _save(fig, "6_roc_curves.png")
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    PrecisionRecallDisplay.from_predictions(y_test, test_prob, ax=ax, name="Pre-decision model")
+    ax.axhline(np.mean(y_test), ls="--", color="gray", label="Test prevalence")
+    ax.set_title("Precision–Recall curve · held-out test")
+    _save(fig, "6_pr_curves.png")
+
+    fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+    for ax, threshold, title in ((axes[0], 0.5, "Threshold 0.50"), (axes[1], t_opt, f"OOF threshold {t_opt:.2f}")):
+        ConfusionMatrixDisplay.from_predictions(y_test, test_prob >= threshold, labels=[0, 1], display_labels=["No default", "Default"], cmap="Blues", colorbar=False, ax=ax)
+        ax.set_title(title)
+    fig.suptitle("Test confusion matrices")
+    _save(fig, "6_confusion_matrices.png")
+
+    shallow = build_model_pipeline(DecisionTreeClassifier(max_depth=3, class_weight="balanced", random_state=RANDOM_STATE), "B")
+    shallow.fit(X_train, y_train)
+    names = shallow.named_steps["preprocessor"].get_feature_names_out()
+    fig, ax = plt.subplots(figsize=(21, 9))
+    plot_tree(shallow.named_steps["classifier"], feature_names=names, class_names=["No default", "Default"], filled=True, rounded=True, fontsize=7, ax=ax)
+    ax.set_title("Balanced decision tree, depth 3 (Scenario B)")
+    _save(fig, "7_dt_tree_structure.png")
+
+    depths = [1, 2, 3, 4, 5, 7, 10]
+    curve_pipe = build_model_pipeline(DecisionTreeClassifier(class_weight="balanced", random_state=RANDOM_STATE), "B")
+    train_scores, valid_scores = validation_curve(
+        curve_pipe, X_train, y_train, param_name="classifier__max_depth",
+        param_range=depths, cv=3, scoring="average_precision", n_jobs=-1,
+    )
+    fig, ax = plt.subplots(figsize=(7, 4.5))
+    ax.errorbar(depths, train_scores.mean(axis=1), yerr=train_scores.std(axis=1), marker="o", label="Train")
+    ax.errorbar(depths, valid_scores.mean(axis=1), yerr=valid_scores.std(axis=1), marker="s", label="Validation")
+    ax.set(xlabel="Maximum depth", ylabel="Average Precision (AP)", title="Decision tree validation curve")
+    ax.legend()
+    _save(fig, "7_validation_curve_bias_variance.png")
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+    stages = np.arange(1, len(scratch_boost["log_loss_by_stage"]) + 1)
+    ax.plot(stages, scratch_boost["log_loss_by_stage"], marker="o", label="From-scratch")
+    ax.set(xlabel="Boosting iteration", ylabel="Training binary log loss", title=f"Five-step Newton boosting (max diff {scratch_boost['max_abs_diff']:.1e})")
+    ax.legend()
+    _save(fig, "7_boosting_from_scratch.png")
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    order = importance.sort_values("permutation_ap_mean", ascending=True)
+    ax.barh(order.feature, order.built_in_impurity_importance, alpha=0.65, label="Built-in impurity")
+    scaled_perm = order.permutation_ap_mean / max(float(order.permutation_ap_mean.max()), 1e-12)
+    ax.scatter(scaled_perm, order.feature, color="#E45756", marker="D", label="Permutation AP (scaled to max=1)")
+    ax.set(xlabel="Impurity importance / scaled permutation AP", title="Feature importance methods answer different questions")
+    ax.legend()
+    _save(fig, "7_feature_importance_comparison.png")
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\src\__init__.py =====
+
+"""Reproducible credit-risk classification project."""
+
+__version__ = "1.0.0"
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\baseline_results.csv =====
+
+model,weighting,scenario,AP_mean,AP_std,ROC_AUC_mean,ROC_AUC_std,F1_mean,F1_std,Precision_mean,Precision_std,Recall_mean,Recall_std,Accuracy_mean,Accuracy_std
+GradientBoosting,Unweighted,B,0.7872807059691483,0.0059351257997134164,0.8790317652673675,0.0036640090251560493,0.6515227279317877,0.009656810316169308,0.9534787322981039,0.02275864259967141,0.4950617283950617,0.012464781999354227,0.8842133761953127,0.0027695082189911693
+GradientBoosting,Balanced,B,0.7843906580865927,0.006294596941367357,0.8782875455929879,0.004261876963268043,0.6547021879669318,0.009283381678604957,0.6079820539841244,0.014279854809878771,0.709347442680776,0.0045651425416383526,0.8363094764816335,0.006277495278506101
+RandomForest,Unweighted,B,0.7701479720642576,0.003773418405004046,0.8648564100894311,0.0022903454268476653,0.6629427046825109,0.011522162558022539,0.8862315647331507,0.014562137542996751,0.5296296296296296,0.012495936214404492,0.88224638621673,0.003569773117452907
+RandomForest,Balanced,B,0.7684200225569726,0.0034615353557139,0.8651313287039862,0.001665956821968638,0.669753950761897,0.007849340055651998,0.7414219100412016,0.014720335712996002,0.6109347442680777,0.011588657143562263,0.8682453278074899,0.0035658268532375408
+DecisionTree,Balanced,B,0.4733974172936223,0.010967570306701405,0.7596356692589009,0.0046912865695696165,0.6250438404069409,0.009287520690504435,0.6273369488491722,0.01659186076606595,0.6229276895943562,0.005239312443567148,0.8365020950627032,0.005855552113930828
+DecisionTree,Unweighted,B,0.4686805501256627,0.012290644621622923,0.7616117604275481,0.007534904242955449,0.6236193567038688,0.011637446222539516,0.6112555898048583,0.014908512189000965,0.63668430335097,0.01350387374877736,0.8319124889687055,0.00612284071717331
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\cv_results.csv =====
+
+model,scenario,weighting,best_params,search_best_AP,AP_mean,AP_std,ROC_AUC_mean,ROC_AUC_std,F1_mean,F1_std,Precision_mean,Precision_std,Recall_mean,Recall_std,Accuracy_mean,Accuracy_std
+GradientBoosting,B,Balanced,"{'classifier__subsample': 0.8, 'classifier__n_estimators': 300, 'classifier__min_samples_leaf': 20, 'classifier__max_features': None, 'classifier__max_depth': 5, 'classifier__learning_rate': 0.1}",0.8228447077512197,0.8228447077512197,0.008470618425286854,0.9069443230479765,0.006922388771283055,0.7031957426953628,0.004562480024871729,0.6637286837982763,0.006553585409021866,0.747795414462081,0.01097874744090718,0.8619585331176847,0.0021955216149641245
+RandomForest,B,Balanced,"{'classifier__n_estimators': 300, 'classifier__min_samples_split': 25, 'classifier__min_samples_leaf': 5, 'classifier__max_features': 0.5, 'classifier__max_depth': 18}",0.7889067641829667,0.7889067641829667,0.0057459329738176615,0.8804795325069327,0.0032500836193597193,0.678205546048511,0.007555626251614029,0.6673209933331623,0.012750014608038868,0.6895943562610228,0.007985348446329279,0.8568671755906878,0.004425043068310873
+DecisionTree,B,Balanced,"{'classifier__criterion': 'entropy', 'classifier__max_depth': 14, 'classifier__min_samples_leaf': 30, 'classifier__min_samples_split': 2}",0.7611017065324773,0.7611017065324773,0.007523606536083193,0.8560745866137548,0.004876533257450636,0.6293213580898522,0.019672348752493168,0.5582859165822497,0.033447177344293276,0.7225749559082892,0.006904260716424483,0.8133596981116357,0.017392034348260803
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\feature_importance.csv =====
+
+feature,built_in_impurity_importance,permutation_ap_mean,permutation_ap_std
+person_income,0.32688628750896337,0.331745449890027,0.006194504235998567
+loan_percent_income,0.2918672251510413,0.3199515395280214,0.011513391339165464
+person_home_ownership,0.10648007880041513,0.22624843378617082,0.008699946851155467
+loan_amnt,0.04833344272373452,0.178130778402335,0.008867646525356319
+loan_intent,0.08117838767629117,0.09746489583435534,0.004264748827494354
+cb_person_default_on_file,0.07177006408295868,0.045055085284117405,0.002733518421587331
+person_age,0.028697074510199785,0.03186322554177688,0.0021971252816756484
+person_emp_length,0.02902546463187345,0.029651602386006427,0.0012211729204994668
+cb_person_cred_hist_length,0.014806946400848064,0.012608951799374768,0.0008739325667041928
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\feature_importance_encoded.csv =====
+
+encoded_feature,source_feature,built_in_importance
+person_age,person_age,0.028697074510199785
+person_income,person_income,0.32688628750896337
+person_emp_length,person_emp_length,0.02902546463187345
+loan_amnt,loan_amnt,0.04833344272373452
+loan_percent_income,loan_percent_income,0.2918672251510413
+cb_person_cred_hist_length,cb_person_cred_hist_length,0.014806946400848064
+missingindicator_person_emp_length,missingindicator_person_emp_length,0.0009550285136746908
+person_home_ownership_MORTGAGE,person_home_ownership,0.005246369380462434
+person_home_ownership_OTHER,person_home_ownership,0.0007349369691150347
+person_home_ownership_OWN,person_home_ownership,0.032796188835413055
+person_home_ownership_RENT,person_home_ownership,0.06770258361542461
+loan_intent_DEBTCONSOLIDATION,loan_intent,0.01589005696545377
+loan_intent_EDUCATION,loan_intent,0.008097269900653882
+loan_intent_HOMEIMPROVEMENT,loan_intent,0.020287407214186398
+loan_intent_MEDICAL,loan_intent,0.019625106785650024
+loan_intent_PERSONAL,loan_intent,0.002026977313223062
+loan_intent_VENTURE,loan_intent,0.015251569497124043
+cb_person_default_on_file,cb_person_default_on_file,0.07177006408295868
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\gini_scratch_verification.csv =====
+
+weighting,scratch_feature,scratch_threshold,scratch_information_gain,sklearn_feature,sklearn_threshold,sklearn_information_gain,absolute_gain_difference
+unweighted,loan_percent_income,0.305,0.06291752155563538,loan_percent_income,0.3050000071525574,0.06291752155563538,0.0
+balanced,loan_percent_income,0.305,0.08378081132987006,loan_percent_income,0.3050000071525574,0.08378081132981824,5.181965967437918e-14
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\scenario_comparison.csv =====
+
+scenario,scenario_name,oof_t_opt,evaluation,threshold,ap,roc_auc,f1,precision,recall,accuracy,tn,fp,fn,tp
+B,Pre-Decision,0.62,default_0.50,0.5,0.8355169211478609,0.9166918729403273,0.7135938004520503,0.658129839189994,0.7792665726375176,0.8631595186670781,4490,574,313,1105
+B,Pre-Decision,0.62,oof_t_opt,0.62,0.8355169211478609,0.9166918729403273,0.7252994011976048,0.7727272727272727,0.6833568406205924,0.886763344646714,4779,285,449,969
+A,Full-Feature (leakage comparison),0.64,default_0.50,0.5,0.9151886146223812,0.9548587668812402,0.8253630889125044,0.8291814946619217,0.8215796897038082,0.923943227398951,4824,240,253,1165
+A,Full-Feature (leakage comparison),0.64,oof_t_opt,0.64,0.9151886146223812,0.9548587668812402,0.8442906574394463,0.9281487743026204,0.7743300423131171,0.937519284171552,4979,85,320,1098
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\test_results.csv =====
+
+model,scenario,evaluation,threshold,ap,roc_auc,f1,precision,recall,accuracy,tn,fp,fn,tp
+GradientBoosting,B,default_0.50,0.5,0.8355169211478609,0.9166918729403273,0.7135938004520503,0.658129839189994,0.7792665726375176,0.8631595186670781,4490,574,313,1105
+GradientBoosting,B,oof_t_opt,0.62,0.8355169211478609,0.9166918729403273,0.7252994011976048,0.7727272727272727,0.6833568406205924,0.886763344646714,4779,285,449,969
+
+
+===== FILE: C:\Users\tptha\Downloads\Nhom9_CreditRisk\outputs\threshold_analysis.csv =====
+
+threshold,ap,roc_auc,f1,precision,recall,accuracy,tn,fp,fn,tp,selected_for_f1,selected_for_recall70
+0.05,0.8226264848548341,0.9068119113831707,0.40761932353154195,0.25647101713452425,0.9925925925925926,0.36907470976202417,3941,16316,42,5628,False,False
+0.06,0.8226264848548341,0.9068119113831707,0.4192005976839746,0.26592417061611373,0.9895943562610229,0.4003162726115632,4768,15489,59,5611,False,False
+0.07,0.8226264848548341,0.9068119113831707,0.4307395993836672,0.2755544603252834,0.9860670194003527,0.4300150422339646,5558,14699,79,5591,False,False
+0.08,0.8226264848548341,0.9068119113831707,0.4420442361910813,0.28524573361348843,0.981657848324515,0.4580553091371929,6310,13947,104,5566,False,False
+0.09,0.8226264848548341,0.9068119113831707,0.4528440666884603,0.2947026912030635,0.9772486772486773,0.4835499672156439,6996,13261,129,5541,False,False
+0.1,0.8226264848548341,0.9068119113831707,0.4627829002514669,0.30351841671247937,0.9737213403880071,0.5056119103637136,7588,12669,149,5521,False,False
+0.11,0.8226264848548341,0.9068119113831707,0.4719477618352092,0.3119604725124943,0.9687830687830687,0.5258996413005746,8142,12115,177,5493,False,False
+0.12,0.8226264848548341,0.9068119113831707,0.48081751310399506,0.3204367991545823,0.962610229276896,0.5453774057931886,8682,11575,212,5458,False,False
+0.13,0.8226264848548341,0.9068119113831707,0.4899374183962901,0.3289402091771961,0.9596119929453263,0.5630423882439156,9157,11100,229,5441,False,False
+0.14,0.8226264848548341,0.9068119113831707,0.4990558651499102,0.3377173845290781,0.9555555555555556,0.580475951710572,9632,10625,252,5418,False,False
+0.15,0.8226264848548341,0.9068119113831707,0.5089092108984633,0.34727225939269174,0.9520282186948854,0.5981795039919775,10111,10146,272,5398,False,False
+0.16,0.8226264848548341,0.9068119113831707,0.5186149691358025,0.35689632284614364,0.9483245149911816,0.6149959501677787,10568,9689,293,5377,False,False
+0.17,0.8226264848548341,0.9068119113831707,0.527067632136348,0.36566195065272367,0.9435626102292769,0.6296910556562657,10976,9281,320,5350,False,False
+0.18,0.8226264848548341,0.9068119113831707,0.5351503570351,0.37429656724817106,0.9384479717813051,0.64346048520847,11362,8895,349,5321,False,False
+0.19,0.8226264848548341,0.9068119113831707,0.5421297956256723,0.382011116725619,0.9333333333333333,0.6552242835653952,11696,8561,378,5292,False,False
+0.2,0.8226264848548341,0.9068119113831707,0.5505788674105506,0.3916089127356733,0.9268077601410935,0.6691094226096348,12093,8164,415,5255,False,False
+0.21,0.8226264848548341,0.9068119113831707,0.5571794324727971,0.3993729928123566,0.9211640211640212,0.6797932657075636,12402,7855,447,5223,False,False
+0.22,0.8226264848548341,0.9068119113831707,0.5655412385146523,0.40878723571484715,0.917283950617284,0.6917884830485594,12735,7522,469,5201,False,False
+0.23,0.8226264848548341,0.9068119113831707,0.5732025056821332,0.4179804349583637,0.9118165784832452,0.7030508736066649,13058,7199,500,5170,False,False
+0.24,0.8226264848548341,0.9068119113831707,0.5800733841377363,0.4265670402656704,0.9061728395061729,0.7130790295830601,13350,6907,532,5138,False,False
+0.25,0.8226264848548341,0.9068119113831707,0.5868765800965295,0.4352309527867735,0.9007054673721341,0.7226829174219925,13630,6627,563,5107,False,False
+0.26,0.8226264848548341,0.9068119113831707,0.5943572933739171,0.44480462589802,0.8954144620811287,0.7327110733983878,13920,6337,593,5077,False,False
+0.27,0.8226264848548341,0.9068119113831707,0.6010479933309515,0.4537037037037037,0.8901234567901235,0.7415821344544298,14180,6077,623,5047,False,False
+0.28,0.8226264848548341,0.9068119113831707,0.6090754671196311,0.4642130571481413,0.8853615520282186,0.7514560111081112,14463,5794,650,5020,False,False
+0.29,0.8226264848548341,0.9068119113831707,0.615460485760079,0.47308567096285065,0.8804232804232804,0.7594013962278705,14697,5560,678,4992,False,False
+0.3,0.8226264848548341,0.9068119113831707,0.6210051384885324,0.4816290824261275,0.8738977072310405,0.7667296640567748,14924,5333,715,4955,False,False
+0.31,0.8226264848548341,0.9068119113831707,0.6272460813049573,0.4910215482841181,0.8680776014109347,0.7743664905311066,15155,5102,748,4922,False,False
+0.32,0.8226264848548341,0.9068119113831707,0.6316880424925508,0.4991809991809992,0.8599647266313933,0.7806919427623713,15365,4892,794,4876,False,False
+0.33,0.8226264848548341,0.9068119113831707,0.6368178829717291,0.5076519916142558,0.8541446208112875,0.7869402553322791,15560,4697,827,4843,False,False
+0.34,0.8226264848548341,0.9068119113831707,0.6425852974560994,0.517030192328355,0.8486772486772487,0.7935356963782929,15762,4495,858,4812,False,False
+0.35,0.8226264848548341,0.9068119113831707,0.648641322762079,0.5266864751843293,0.8440917107583774,0.8000154279322714,15956,4301,884,4786,False,False
+0.36,0.8226264848548341,0.9068119113831707,0.6524910542251583,0.5349808169713383,0.8361552028218695,0.8052223550738612,16136,4121,929,4741,False,False
+0.37,0.8226264848548341,0.9068119113831707,0.6573808357247848,0.5449692468376465,0.8282186948853616,0.8112006788290199,16336,3921,974,4696,False,False
+0.38,0.8226264848548341,0.9068119113831707,0.6624140619462754,0.5537385946202157,0.8241622574955908,0.8162918964785745,16491,3766,997,4673,False,False
+0.39,0.8226264848548341,0.9068119113831707,0.6659481210030898,0.5619012974414939,0.817283950617284,0.820688857175917,16644,3613,1036,4634,False,False
+0.4,0.8226264848548341,0.9068119113831707,0.6705033874845195,0.5711803400769517,0.8116402116402116,0.8255486558414008,16802,3455,1068,4602,False,False
+0.41,0.8226264848548341,0.9068119113831707,0.6740511002806084,0.5797764227642277,0.8049382716049382,0.8297527673853512,16949,3308,1106,4564,False,False
+0.42,0.8226264848548341,0.9068119113831707,0.6779863864163364,0.5886478763475776,0.799294532627866,0.8339568789293015,17090,3167,1138,4532,False,False
+0.43,0.8226264848548341,0.9068119113831707,0.6818906001062135,0.5983224603914259,0.7925925925925926,0.8382766999652872,17240,3017,1176,4494,False,False
+0.44,0.8226264848548341,0.9068119113831707,0.6858196343524351,0.6075122482308111,0.7873015873015873,0.8422493925251668,17373,2884,1206,4464,False,False
+0.45,0.8226264848548341,0.9068119113831707,0.6907192394607652,0.6187351668295407,0.781657848324515,0.8469163420372584,17526,2731,1238,4432,False,False
+0.46,0.8226264848548341,0.9068119113831707,0.6935713157479071,0.6280034324942791,0.7744268077601411,0.85034905696764,17656,2601,1279,4391,False,False
+0.47,0.8226264848548341,0.9068119113831707,0.6960211352173565,0.6372965840785808,0.7666666666666667,0.8535503529139508,17783,2474,1323,4347,False,False
+0.48,0.8226264848548341,0.9068119113831707,0.6986467871323232,0.6462299505321542,0.7603174603174603,0.8565587997068693,17897,2360,1359,4311,False,False
+0.49,0.8226264848548341,0.9068119113831707,0.7019672131147541,0.6557427258805513,0.7552028218694885,0.8597600956531801,18009,2248,1388,4282,False,False
+0.5,0.8226264848548341,0.9068119113831707,0.7032092213284684,0.6636406323368289,0.7477954144620811,0.8619585760018513,18108,2149,1430,4240,False,False
+0.51,0.8226264848548341,0.9068119113831707,0.7036912751677852,0.67104,0.7396825396825397,0.8637713580437382,18201,2056,1476,4194,False,False
+0.52,0.8226264848548341,0.9068119113831707,0.7056819149842406,0.6824847586093261,0.7305114638447971,0.8667412350059783,18330,1927,1528,4142,False,False
+0.53,0.8226264848548341,0.9068119113831707,0.7065105063727178,0.6903399528778189,0.7234567901234568,0.8685540170478652,18417,1840,1568,4102,False,False
+0.54,0.8226264848548341,0.9068119113831707,0.7082607180202161,0.6999655528763348,0.7167548500881834,0.8708682068885718,18515,1742,1606,4064,False,False
+0.55,0.8226264848548341,0.9068119113831707,0.7094725701181867,0.7095977417078334,0.709347442680776,0.8729509777452077,18611,1646,1648,4022,False,False
+0.56,0.8226264848548341,0.9068119113831707,0.7120521754668097,0.7215281549882311,0.7028218694885362,0.8756894357233772,18719,1538,1685,3985,False,True
+0.57,0.8226264848548341,0.9068119113831707,0.7130198915009042,0.7315398886827458,0.6954144620811288,0.8775793574266209,18810,1447,1727,3943,False,False
+0.58,0.8226264848548341,0.9068119113831707,0.7130450681049456,0.740178401973809,0.6878306878306878,0.8789293015003664,18888,1369,1770,3900,False,False
+0.59,0.8226264848548341,0.9068119113831707,0.7150115473441109,0.7507274490785645,0.6825396825396826,0.8810120723570024,18972,1285,1800,3870,False,False
+0.6,0.8226264848548341,0.9068119113831707,0.715592903828198,0.7603174603174603,0.6758377425044092,0.8825162957534617,19049,1208,1838,3832,False,False
+0.61,0.8226264848548341,0.9068119113831707,0.7158629800887043,0.769839659021717,0.6689594356261023,0.8838662398272071,19123,1134,1877,3793,False,False
+0.62,0.8226264848548341,0.9068119113831707,0.7162445248524091,0.7783526490066225,0.66331569664903,0.8850619045782389,19186,1071,1909,3761,True,False
+0.63,0.8226264848548341,0.9068119113831707,0.7151655119322555,0.7869546802202456,0.6553791887125221,0.8858333011918078,19251,1006,1954,3716,False,False
+0.64,0.8226264848548341,0.9068119113831707,0.7145219336640405,0.7965734114075038,0.6477954144620811,0.8867975469587689,19319,938,1997,3673,False,False
+0.65,0.8226264848548341,0.9068119113831707,0.7135984290623466,0.8048726467331119,0.6409171075837743,0.8874918039109808,19376,881,2036,3634,False,False
+0.66,0.8226264848548341,0.9068119113831707,0.7125,0.8142857142857143,0.6333333333333333,0.8882246306938713,19438,819,2079,3591,False,False
+0.67,0.8226264848548341,0.9068119113831707,0.7115519487025348,0.8237067965669218,0.6262786596119929,0.8889574574767617,19497,760,2119,3551,False,False
+0.68,0.8226264848548341,0.9068119113831707,0.7121181468743678,0.8349146110056926,0.6208112874779541,0.8902302618891503,19561,696,2150,3520,False,False
+0.69,0.8226264848548341,0.9068119113831707,0.710598796286851,0.8427292523590613,0.6142857142857143,0.8905773903652563,19607,650,2187,3483,False,False
+0.7,0.8226264848548341,0.9068119113831707,0.7104207386071392,0.8523821278696618,0.608994708994709,0.891425926640182,19659,598,2217,3453,False,False
+0.71,0.8226264848548341,0.9068119113831707,0.7083592615639909,0.8597683786505539,0.6022927689594356,0.8915416361322174,19700,557,2255,3415,False,False
+0.72,0.8226264848548341,0.9068119113831707,0.704331450094162,0.8657407407407407,0.5936507936507937,0.8910016585027192,19735,522,2304,3366,False,False
+0.73,0.8226264848548341,0.9068119113831707,0.7025603203034454,0.8725464538079037,0.5880070546737214,0.8911173679947545,19770,487,2336,3334,False,False
+0.74,0.8226264848548341,0.9068119113831707,0.6995220392989909,0.879305740987984,0.5807760141093474,0.8908859490106839,19805,452,2377,3293,False,False
+0.75,0.8226264848548341,0.9068119113831707,0.6978086584714057,0.885753052917232,0.5756613756613757,0.8909630886720408,19836,421,2406,3264,False,False
+0.76,0.8226264848548341,0.9068119113831707,0.6955021033329738,0.8953068592057761,0.5686067019400353,0.8911173679947545,19880,377,2446,3224,False,False
+0.77,0.8226264848548341,0.9068119113831707,0.6931360818013707,0.904342889582742,0.5619047619047619,0.8911945076561114,19920,337,2484,3186,False,False
+0.78,0.8226264848548341,0.9068119113831707,0.6908891328210758,0.9148255813953489,0.555026455026455,0.8913873568095037,19964,293,2523,3147,False,False
+0.79,0.8226264848548341,0.9068119113831707,0.6874654275915477,0.9222321163550015,0.5479717813051146,0.8910402283333976,19995,262,2563,3107,False,False
+0.8,0.8226264848548341,0.9068119113831707,0.6833890746934225,0.9287878787878788,0.5405643738977073,0.890461680873221,20022,235,2605,3065,False,False
+0.81,0.8226264848548341,0.9068119113831707,0.6809705684115929,0.937809405940594,0.5345679012345679,0.890461680873221,20056,201,2639,3031,False,False
+0.82,0.8226264848548341,0.9068119113831707,0.6788824793575388,0.946389151687165,0.5292768959435626,0.8905002507038994,20087,170,2669,3001,False,False
+0.83,0.8226264848548341,0.9068119113831707,0.6750853242320819,0.9509615384615384,0.5232804232804232,0.8898445635823659,20104,153,2703,2967,False,False
+0.84,0.8226264848548341,0.9068119113831707,0.6721630596587655,0.9582109043421482,0.517636684303351,0.8895745747676168,20129,128,2735,2935,False,False
+0.85,0.8226264848548341,0.9068119113831707,0.6689718764407561,0.9654025282767797,0.5118165784832451,0.8892274462915107,20153,104,2768,2902,False,False
+0.86,0.8226264848548341,0.9068119113831707,0.6648103028193526,0.9715157680569685,0.5052910052910053,0.8885717591699772,20173,84,2805,2865,False,False
+0.87,0.8226264848548341,0.9068119113831707,0.6601261387526279,0.9771784232365145,0.4984126984126984,0.88776179272573,20191,66,2844,2826,False,False
+0.88,0.8226264848548341,0.9068119113831707,0.653633258744553,0.9836937256292095,0.4894179894179894,0.8865661279746981,20211,46,2895,2775,False,False
+0.89,0.8226264848548341,0.9068119113831707,0.6478606139623089,0.9877123238164076,0.482010582010582,0.8854090330543449,20223,34,2937,2733,False,False
+0.9,0.8226264848548341,0.9068119113831707,0.6415184433568103,0.9926117473217584,0.4738977072310406,0.8841747984726347,20237,20,2983,2687,False,False
+0.91,0.8226264848548341,0.9068119113831707,0.63621103117506,0.9936329588014982,0.4679012345679012,0.882979133721603,20240,17,3017,2653,False,False
+0.92,0.8226264848548341,0.9068119113831707,0.6293841147402676,0.9939094023601066,0.4604938271604938,0.8813977706637868,20241,16,3059,2611,False,False
+0.93,0.8226264848548341,0.9068119113831707,0.6218609729467427,0.996113486202876,0.45202821869488535,0.8797778377752922,20247,10,3107,2563,False,False
+0.94,0.8226264848548341,0.9068119113831707,0.6155910699036232,0.998417095370004,0.44497354497354497,0.8784664635322251,20253,4,3147,2523,False,False
+0.95,0.8226264848548341,0.9068119113831707,0.6069761729304839,0.9995954692556634,0.43580246913580245,0.8765765418289814,20256,1,3199,2471,False,False
+
